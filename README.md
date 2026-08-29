@@ -2,6 +2,12 @@
 
 **PlasmaTerm is developed targetting Windows Terminal. And has only been tested in Windows Terminal**
 
+
+
+
+
+Features:
+
 Hue-range and palette-size controls affect only procedural palettes; stored LUTs remain 256 colours.
 Config watching is a next-frame, low-rate control and is not intended as instantaneous high-rate modulation (planned in future)
 
