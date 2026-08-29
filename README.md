@@ -1,5 +1,10 @@
 **PlasmaTerm** is a lightweight real-time generative plasma visualizer with a minimal, keyboard-driven interface. The rendered viewport acts as the primary interaction surface, avoiding conventional menus and persistent UI.
 
+**PlasmaTerm is developed targetting Windows Terminal. And has only been tested in Windows Terminal**
+
+Hue-range and palette-size controls affect only procedural palettes; stored LUTs remain 256 colours.
+Config watching is a next-frame, low-rate control and is not intended as instantaneous high-rate modulation (planned in future)
+
 Animated plasma patterns are controlled through a compact set of parameters for spatial frequency, hue range, animation speed, and hue shifting. Keyboard controls allow immediate visual exploration, including saving and recalling configurations.
 Unlike Perlin or Simplex noise, the apparent complexity does not come from pseudo-randomness; it emerges deterministically from the interaction of simple mathematical waves.
 
