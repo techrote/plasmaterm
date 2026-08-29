@@ -50,7 +50,7 @@ Run these commands from the PlasmaTerm repository directory.
 
 ### PlasmaTerm
 
-Start PlasmaTerm using `plasma.conf`:
+Start PlasmaTerm using:
 
 ```powershell
 python plasma.py
@@ -62,7 +62,7 @@ Show the available command-line options:
 python plasma.py --help
 ```
 
-Command-line parameters provide initial values, but `plasma.conf` is loaded on the first frame and becomes authoritative. Edit the config or use the keyboard controls for persistent changes.
+Command-line parameters provide initial values, but `plasma.conf` is loaded on the first frame and becomes authoritative. Edit the config or use the keyboard controls for persistent changes. If plasma.conf is not present plasma_config_gen.py will create it.
 
 ### Configuration generator
 
