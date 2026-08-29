@@ -1,0 +1,686 @@
+import argparse
+import ctypes
+import math
+import os
+import re
+import sys
+import tempfile
+import time
+from configparser import ConfigParser, Error as ConfigError
+
+if os.name == 'nt':
+    import msvcrt
+else:
+    msvcrt = None
+
+# --- Config file support ---
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'plasma.conf')
+_config_cache = {'signature': None}
+LUT_KEYS = '0123456789'
+LUT_SIZE = 256
+MAX_PALETTE_SIZE = 1024
+
+def ensure_config_file():
+    """Generate a complete default config only when plasma.conf is absent."""
+    if os.path.isfile(CONFIG_FILE):
+        return False
+    try:
+        from plasma_config_gen import generate_config
+        generate_config(output_path=CONFIG_FILE)
+    except Exception as exc:
+        raise RuntimeError(
+            f'{CONFIG_FILE} is missing and deterministic generation failed: '
+            f'{exc}') from exc
+    if not os.path.isfile(CONFIG_FILE):
+        raise RuntimeError(
+            f'configuration generator did not create {CONFIG_FILE}')
+    return True
+
+# Compact-keyboard layout. Each upper-row key increases a value and the key
+# immediately below it decreases the same value. Shift is 10x and Ctrl is
+# 100x. Alt+S is reserved for saving the active preset slot.
+PARAMETER_KEYS = {
+    'Q': ('fy', 0.01),
+    'A': ('fy', -0.01),
+    'W': ('fx', 0.01),
+    'S': ('fx', -0.01),
+    'E': ('hue_start', 1.0),
+    'D': ('hue_start', -1.0),
+    'R': ('hue_end', 1.0),
+    'F': ('hue_end', -1.0),
+    'T': ('speed', 0.02),
+    'G': ('speed', -0.02),
+    'Y': ('hue_shift', 1.0),
+    'H': ('hue_shift', -1.0),
+    'U': ('rad', 0.01),
+    'J': ('rad', -0.01),
+    'I': ('palette_size', 1),
+    'K': ('palette_size', -1),
+    'O': ('fps', 1.0),
+    'L': ('fps', -1.0),
+}
+
+_key_down = {}
+_key_repeat_at = {}
+_keys_suppressed_until_release = set()
+KEY_REPEAT_DELAY = 0.35
+KEY_REPEAT_INTERVAL = 0.06
+
+VK_SHIFT = 0x10
+VK_CONTROL = 0x11
+VK_ALT = 0x12
+VIEWPORT_KEYBOARD_OWNER = 'viewport'
+
+def _command_virtual_keys():
+    """Return every key whose transient state belongs to PlasmaTerm."""
+    return ({ord(key) for key in LUT_KEYS}
+            | {ord(key) for key in PARAMETER_KEYS}
+            | {VK_SHIFT, VK_CONTROL, VK_ALT})
+
+def clear_transient_keyboard_state(suppress_held=False):
+    """Clear input state that cannot survive an ownership/focus boundary.
+
+    When requested, keys physically held at the boundary are ignored until
+    released. This prevents a key held across Alt-Tab or a modal transition
+    from becoming a new press when the viewport regains ownership.
+    """
+    _key_down.clear()
+    _key_repeat_at.clear()
+    _keys_suppressed_until_release.clear()
+
+    if suppress_held and os.name == 'nt':
+        for vk in _command_virtual_keys():
+            state = ctypes.windll.user32.GetAsyncKeyState(vk)
+            if state & 0x8000:
+                _keys_suppressed_until_release.add(vk)
+
+class ViewportKeyboardOwnership:
+    """Single authority for whether PlasmaTerm may dispatch keyboard input.
+
+    Document focus and the logical UI owner are deliberately separate. Future
+    text fields, dialogs, or other UI can call set_owner() while active, then
+    return ownership to VIEWPORT_KEYBOARD_OWNER when finished.
+    """
+
+    def __init__(self):
+        self.document_window = None
+        self.document_focused = False
+        self.terminal_document_focused = True
+        self._focus_sequence_tail = ''
+        self.owner = VIEWPORT_KEYBOARD_OWNER
+        self._previously_owned = False
+
+    def bind_to_current_document(self):
+        """Bind this run to the currently foreground terminal window."""
+        if os.name != 'nt':
+            return
+        self.document_window = ctypes.windll.user32.GetForegroundWindow()
+        self.refresh_document_focus()
+
+    def viewport_has_keyboard_ownership(self):
+        return (self.document_focused
+                and self.owner == VIEWPORT_KEYBOARD_OWNER)
+
+    def set_owner(self, owner):
+        """Assign logical keyboard ownership; use 'viewport' to restore it."""
+        self.owner = owner
+        self._handle_ownership_transition()
+
+    def refresh_document_focus(self):
+        """Refresh physical focus and return viewport ownership state."""
+        self._consume_terminal_focus_events()
+        if os.name != 'nt' or not self.document_window:
+            self.document_focused = False
+        else:
+            foreground = ctypes.windll.user32.GetForegroundWindow()
+            self.document_focused = (foreground == self.document_window
+                                     and self.terminal_document_focused)
+        self._handle_ownership_transition()
+        return self.viewport_has_keyboard_ownership()
+
+    def _consume_terminal_focus_events(self):
+        """Consume DECSET 1004 focus reports and discard other input bytes.
+
+        Native HWND focus handles Alt-Tab and other-window changes. Terminal
+        focus reporting adds document/tab focus within one Windows Terminal
+        window, where several tabs share the same HWND.
+        """
+        if os.name != 'nt' or msvcrt is None:
+            return
+        while msvcrt.kbhit():
+            char = msvcrt.getwch()
+            if char == '\x03':
+                raise KeyboardInterrupt
+            self._focus_sequence_tail = (self._focus_sequence_tail + char)[-3:]
+            if self._focus_sequence_tail == '\x1b[I':
+                self.terminal_document_focused = True
+                self._focus_sequence_tail = ''
+            elif self._focus_sequence_tail == '\x1b[O':
+                self.terminal_document_focused = False
+                self._focus_sequence_tail = ''
+
+    def revoke(self):
+        """Revoke ownership and clear all transient input immediately."""
+        self.owner = None
+        self._handle_ownership_transition()
+
+    def _handle_ownership_transition(self):
+        owned = self.viewport_has_keyboard_ownership()
+        if owned != self._previously_owned:
+            # Reset on both loss and regain. The regain reset also catches keys
+            # first pressed while PlasmaTerm was unfocused.
+            clear_transient_keyboard_state(suppress_held=True)
+        self._previously_owned = owned
+
+_keyboard_ownership = ViewportKeyboardOwnership()
+
+def viewport_has_keyboard_ownership():
+    """Public ownership query for the central keyboard dispatch gate."""
+    return _keyboard_ownership.viewport_has_keyboard_ownership()
+
+def set_keyboard_input_owner(owner):
+    """Future UI hook: claim input, or pass 'viewport' to restore it."""
+    _keyboard_ownership.set_owner(owner)
+
+CONFIG_KEYS = (
+    ('speed', 'speed'),
+    ('hue_shift', 'hue-shift'),
+    ('fx', 'freq-x'),
+    ('fy', 'freq-y'),
+    ('rad', 'radius'),
+    ('palette_size', 'palette-size'),
+    ('hue_start', 'hue-start'),
+    ('hue_end', 'hue-end'),
+    ('fps', 'fps'),
+    ('active_lut', 'active-lut'),
+)
+
+def validate_config(values):
+    if not 2 <= values['palette_size'] <= MAX_PALETTE_SIZE:
+        raise ValueError(
+            f'palette-size must be between 2 and {MAX_PALETTE_SIZE}')
+    if not 1.0 <= values['fps'] <= 240.0:
+        raise ValueError('fps must be between 1 and 240')
+    if values['active_lut'] not in ('none', *LUT_KEYS):
+        raise ValueError('active-lut must be none or a number from 0 to 9')
+    if not all(math.isfinite(value) for key, value in values.items()
+               if key not in ('palette_size', 'active_lut')):
+        raise ValueError('all numeric config values must be finite')
+    return values
+
+def load_config(parser=None, section='config'):
+    """Load and validate the live settings from plasma.conf."""
+    if parser is None:
+        parser = ConfigParser()
+        if not parser.read(CONFIG_FILE, encoding='utf-8'):
+            raise FileNotFoundError(CONFIG_FILE)
+
+    values = {
+        'speed': parser.getfloat(section, 'speed', fallback=1.0),
+        'hue_shift': parser.getfloat(section, 'hue-shift', fallback=0.0),
+        'fx': parser.getfloat(section, 'freq-x', fallback=0.35),
+        'fy': parser.getfloat(section, 'freq-y', fallback=0.45),
+        'rad': parser.getfloat(section, 'radius', fallback=0.6),
+        'palette_size': parser.getint(section, 'palette-size', fallback=256),
+        'hue_start': parser.getfloat(section, 'hue-start', fallback=0.0),
+        'hue_end': parser.getfloat(section, 'hue-end', fallback=360.0),
+        'fps': parser.getfloat(section, 'fps', fallback=40.0),
+        'active_lut': parser.get(section, 'active-lut', fallback='none').lower(),
+    }
+    return validate_config(values)
+
+def check_config():
+    """Return the config file signature when it has changed, otherwise None."""
+    try:
+        stat = os.stat(CONFIG_FILE)
+        signature = (stat.st_mtime_ns, stat.st_size)
+        if signature != _config_cache['signature']:
+            return signature
+    except OSError:
+        pass
+    return None
+
+def _section_text(values):
+    """Serialize one config/preset section without rewriting the whole file."""
+    lines = []
+    for internal_name, file_name in CONFIG_KEYS:
+        value = values[internal_name]
+        if internal_name == 'palette_size':
+            value = int(value)
+        lines.append(f'{file_name} = {value}')
+    return '\n'.join(lines)
+
+def write_section(section, values):
+    """Atomically add or replace one INI section while preserving comments."""
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as handle:
+        original = handle.read()
+
+    pattern = re.compile(
+        rf'^\[{re.escape(section)}\][ \t]*\r?\n.*?(?=^\[|\Z)',
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(original)
+    if match:
+        replacement = match.group(0)
+        for internal_name, file_name in CONFIG_KEYS:
+            value = values[internal_name]
+            if internal_name == 'palette_size':
+                value = int(value)
+            key_pattern = re.compile(
+                rf'^{re.escape(file_name)}[ \t]*=.*$', re.MULTILINE)
+            new_line = f'{file_name} = {value}'
+            if key_pattern.search(replacement):
+                replacement = key_pattern.sub(new_line, replacement, count=1)
+            else:
+                replacement = replacement.rstrip() + '\n' + new_line + '\n'
+        updated = original[:match.start()] + replacement + original[match.end():]
+    else:
+        replacement = f'[{section}]\n{_section_text(values)}\n'
+        updated = original.rstrip() + '\n\n' + replacement
+
+    config_dir = os.path.dirname(CONFIG_FILE)
+    fd, temp_path = tempfile.mkstemp(
+        prefix='.plasma-', suffix='.tmp', dir=config_dir, text=True)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as handle:
+            handle.write(updated)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, CONFIG_FILE)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+def write_lut(slot, colors):
+    """Atomically add or replace one fixed-size hexadecimal LUT section."""
+    if slot not in LUT_KEYS or len(colors) != LUT_SIZE:
+        raise ValueError('LUT writes require a valid slot and 256 colours')
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as handle:
+        original = handle.read()
+
+    rows = [' '.join(colors[i:i + 8]) for i in range(0, LUT_SIZE, 8)]
+    replacement = (f'[lut-{slot}]\ncolors =\n    '
+                   + '\n    '.join(rows) + '\n')
+    pattern = re.compile(
+        rf'^\[lut-{re.escape(slot)}\][ \t]*\r?\n.*?'
+        rf'(?=^# Placeholder palette:|^\[|\Z)',
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(original)
+    if match:
+        updated = original[:match.start()] + replacement + original[match.end():]
+    else:
+        updated = original.rstrip() + '\n\n' + replacement
+
+    config_dir = os.path.dirname(CONFIG_FILE)
+    fd, temp_path = tempfile.mkstemp(
+        prefix='.plasma-', suffix='.tmp', dir=config_dir, text=True)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as handle:
+            handle.write(updated)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, CONFIG_FILE)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+def load_lut(slot, parser=None):
+    """Load and validate one fixed 256-colour hexadecimal LUT."""
+    if slot not in LUT_KEYS:
+        raise ValueError('invalid LUT slot')
+    if parser is None:
+        parser = ConfigParser()
+        if not parser.read(CONFIG_FILE, encoding='utf-8'):
+            raise FileNotFoundError(CONFIG_FILE)
+    raw = parser.get(f'lut-{slot}', 'colors')
+    colors = raw.replace(',', ' ').split()
+    if len(colors) != LUT_SIZE:
+        raise ValueError(f'lut-{slot} must contain exactly 256 colours')
+    for color in colors:
+        if len(color) != 6 or any(c not in '0123456789abcdefABCDEF'
+                                  for c in color):
+            raise ValueError(f'invalid RGB value in lut-{slot}: {color}')
+    return [color.upper() for color in colors]
+
+def resolve_palette(cfg, parser=None):
+    """Return either the active stored LUT or the procedural hue palette."""
+    if cfg['active_lut'] == 'none':
+        return build_palette(
+            cfg['palette_size'], cfg['hue_start'], cfg['hue_end'])
+    return load_lut(cfg['active_lut'], parser)
+
+def load_runtime_config():
+    """Load parameters and the active LUT as one validated transaction."""
+    parser = ConfigParser()
+    if not parser.read(CONFIG_FILE, encoding='utf-8'):
+        raise FileNotFoundError(CONFIG_FILE)
+    cfg = load_config(parser)
+    return cfg, resolve_palette(cfg, parser)
+
+def load_preset(slot):
+    """Load a complete preset, returning None when the slot is empty/invalid."""
+    parser = ConfigParser()
+    if not parser.read(CONFIG_FILE, encoding='utf-8'):
+        return None
+    section = f'preset-{slot}'
+    if not parser.has_section(section):
+        return None
+    try:
+        return load_config(parser, section)
+    except (ConfigError, ValueError):
+        return None
+
+def resample_palette(colors, size=LUT_SIZE):
+    """Resize a palette by nearest-neighbour sampling for LUT saves."""
+    if len(colors) == size:
+        return list(colors)
+    if len(colors) < 2:
+        raise ValueError('cannot resample an empty palette')
+    return [colors[round(i * (len(colors) - 1) / (size - 1))]
+            for i in range(size)]
+
+def _poll_virtual_key(vk, now):
+    """Return (pressed_now, repeat_now) for one Windows virtual key."""
+    state = ctypes.windll.user32.GetAsyncKeyState(vk)
+    down = bool(state & 0x8000)
+    pressed_since_poll = bool(state & 0x0001)
+
+    if vk in _keys_suppressed_until_release:
+        if not down:
+            _keys_suppressed_until_release.discard(vk)
+        _key_down[vk] = False
+        _key_repeat_at.pop(vk, None)
+        return False, False
+
+    was_down = _key_down.get(vk, False)
+    pressed_now = pressed_since_poll or (down and not was_down)
+    repeat_now = False
+
+    if pressed_now:
+        _key_repeat_at[vk] = now + KEY_REPEAT_DELAY
+    elif down and now >= _key_repeat_at.get(vk, float('inf')):
+        repeat_now = True
+        _key_repeat_at[vk] = now + KEY_REPEAT_INTERVAL
+    elif not down:
+        _key_repeat_at.pop(vk, None)
+
+    _key_down[vk] = down
+    return pressed_now, repeat_now
+
+def _modifier_is_down(vk):
+    """Read a modifier, respecting the post-ownership release latch."""
+    state = ctypes.windll.user32.GetAsyncKeyState(vk)
+    down = bool(state & 0x8000)
+    if vk in _keys_suppressed_until_release:
+        if not down:
+            _keys_suppressed_until_release.discard(vk)
+        return False
+    return down
+
+def _apply_parameter_delta(cfg, key, factor):
+    """Apply one bounded parameter-key adjustment."""
+    name, step = PARAMETER_KEYS[key]
+    value = cfg[name] + step * factor
+    if name == 'palette_size':
+        value = max(2, min(MAX_PALETTE_SIZE, int(round(value))))
+    elif name == 'fps':
+        value = max(1.0, min(240.0, round(value, 10)))
+    else:
+        value = round(value, 10)
+    cfg[name] = value
+
+def poll_hotkeys(cfg, colors, selected_preset, now=None):
+    """Handle invisible direct-load, save, LUT, and parameter controls."""
+    if os.name != 'nt':
+        return selected_preset, None
+
+    # Authoritative gate: no individual command may bypass viewport ownership.
+    if not _keyboard_ownership.refresh_document_focus():
+        return selected_preset, None
+
+    if now is None:
+        now = time.perf_counter()
+    shift = _modifier_is_down(VK_SHIFT)
+    ctrl = _modifier_is_down(VK_CONTROL)
+    alt = _modifier_is_down(VK_ALT)
+    factor = 100 if ctrl else 10 if shift else 1
+    changed = False
+
+    # Number row: direct preset load, or Ctrl+number for direct LUT load.
+    for digit in LUT_KEYS:
+        pressed, _ = _poll_virtual_key(ord(digit), now)
+        if not pressed or alt or shift:
+            continue
+        if ctrl:
+            try:
+                colors = load_lut(digit)
+            except (ConfigError, KeyError, ValueError):
+                continue
+            cfg['active_lut'] = digit
+            changed = True
+        else:
+            selected_preset = int(digit)
+            preset = load_preset(selected_preset)
+            if preset is not None:
+                try:
+                    colors = resolve_palette(preset)
+                except (ConfigError, KeyError, ValueError):
+                    continue
+                cfg.update(preset)
+                changed = True
+
+    # Letter columns adjust parameters. Holding a key repeats after a delay.
+    for key in PARAMETER_KEYS:
+        pressed, repeated = _poll_virtual_key(ord(key), now)
+        if not (pressed or repeated):
+            continue
+        if key == 'S' and alt:
+            if pressed:
+                write_section(f'preset-{selected_preset}', cfg)
+            continue
+        if alt:
+            continue
+        _apply_parameter_delta(cfg, key, factor)
+        changed = True
+
+    if changed:
+        try:
+            colors = resolve_palette(cfg)
+        except (ConfigError, KeyError, ValueError):
+            return selected_preset, None
+        write_section('config', cfg)
+        return selected_preset, colors
+    return selected_preset, None
+
+def hsv(h):
+    h = (h % 1.0) * 6
+    i = int(h)
+    f = h - i
+    segs = [(1,f,0),(f,1,0),(0,1,f),(0,f,1),(f,0,1),(1,0,f)]
+    r,g,b = segs[i % 6]
+    return int(r*255), int(g*255), int(b*255)
+
+def build_palette(size, hue_start, hue_end):
+    """Build a hexadecimal RGB LUT over a hue range in degrees.
+
+    A range such as 330 -> 30 crosses through red. Equal endpoints mean a
+    complete 360-degree palette. Full-circle palettes omit the duplicate end
+    colour; partial ranges include both endpoints.
+    """
+    start = hue_start % 360.0
+    span = (hue_end - hue_start) % 360.0
+    full_circle = math.isclose(span, 0.0, abs_tol=1e-9)
+    if full_circle:
+        span = 360.0
+
+    denominator = size if full_circle else size - 1
+    palette = []
+    for i in range(size):
+        hue = (start + span * i / denominator) / 360.0
+        r, g, b = hsv(hue)
+        palette.append(f'{r:02X}{g:02X}{b:02X}')
+    return palette
+
+def compile_palette(colors):
+    """Compile hexadecimal LUT entries into terminal background sequences."""
+    palette = []
+    for color in colors:
+        r = int(color[0:2], 16)
+        g = int(color[2:4], 16)
+        b = int(color[4:6], 16)
+        # A coloured space is cheaper for the terminal to render than a
+        # foreground-coloured full-block glyph.
+        palette.append(f'\x1b[48;2;{r};{g};{b}m')
+    return palette
+
+def render(t, palette, hue_shift=0.0, fx=0.35, fy=0.45, rad=0.6,
+           frame_time=None):
+    size = os.get_terminal_size()
+    cols, rows = size.columns, size.lines
+    cx, cy = cols / 2, rows / 2
+    palette_size = len(palette)
+
+    # Sample the clock once per frame. hue-shift is expressed in degrees/sec
+    # and rotates indices within the selected palette.
+    if frame_time is None:
+        frame_time = time.perf_counter()
+    hue_offset = int(frame_time * hue_shift * palette_size / 360.0) % palette_size
+
+    lines = []
+    for y in range(rows):
+        row = []
+        previous_idx = -1
+        for x in range(cols):
+            v = (math.sin(x * fx + t)
+                 + math.sin(y * fy - t * 1.2)
+                 + math.sin((x + y) * 0.25 + t * 0.6)
+                 + math.sin(math.hypot(x - cx, y - cy) * rad - t)) / 4
+            v = (v + 1) / 2
+            idx = min(palette_size - 1, int(v * palette_size))
+            idx = (idx + hue_offset) % palette_size
+
+            # Only change the background when the quantized colour changes.
+            # Adjacent cells with the same index become a compact colour run.
+            if idx != previous_idx:
+                row.append(palette[idx])
+                previous_idx = idx
+            row.append(' ')
+        lines.append(''.join(row))
+
+    # Windows Terminal 1.23+ displays this as one synchronized update when the
+    # frame is parsed within its synchronization timeout.
+    return ('\x1b[?2026h\x1b[H'
+            + '\r\n'.join(lines)
+            + '\x1b[0m\x1b[?2026l')
+
+def main():
+    ensure_config_file()
+    parser = argparse.ArgumentParser(
+        prog='plasma.py',
+        description='Procedural plasma/wave animation for Windows Terminal.',
+    )
+    parser.add_argument('--speed', '-s', type=float, default=0.6, help='Time rate multiplier (default: 0.6). Increase for faster cycling.')
+    parser.add_argument('--hue-shift', '--hs', type=float, default=0.6, help='Color hue rotation speed (default: 0.6).')
+    parser.add_argument('--freq-x', '-x', type=float, default=0.35, help='Horizontal sine frequency multiplier (default: 0.35). Increase for more undulating waves.')
+    parser.add_argument('--freq-y', '-y', type=float, default=0.45, help='Vertical sine frequency multiplier (default: 0.45). Decrease for slower vertical undulations.')
+    parser.add_argument('--radius', '-r', type=float, default=0.6, help='Radial effect strength (default: 0.6). Increase for larger center glow.')
+    parser.add_argument('--palette-size', type=int, default=256, help='Number of procedurally generated colours (default: 256; maximum: 1024).')
+    parser.add_argument('--hue-start', type=float, default=0.0, help='First palette hue in degrees (default: 0).')
+    parser.add_argument('--hue-end', type=float, default=360.0, help='Last palette hue in degrees (default: 360).')
+    parser.add_argument('--fps', type=float, default=40.0, help='Maximum frame rate (default: 40).')
+    args = parser.parse_args()
+
+    # Initial config from CLI args
+    cfg = {
+        'speed': args.speed,
+        'hue_shift': args.hue_shift,
+        'fx': args.freq_x,
+        'fy': args.freq_y,
+        'rad': args.radius,
+        'palette_size': args.palette_size,
+        'hue_start': args.hue_start,
+        'hue_end': args.hue_end,
+        'fps': args.fps,
+        'active_lut': 'none',
+    }
+
+    palette_colors = resolve_palette(cfg)
+    palette = compile_palette(palette_colors)
+    t = 0.0
+    selected_preset = 0
+    last_frame_time = time.perf_counter()
+    timer_period_set = False
+
+    if os.name == 'nt':
+        timer_period_set = ctypes.windll.winmm.timeBeginPeriod(1) == 0
+        _keyboard_ownership.bind_to_current_document()
+
+    try:
+        # Use a clean full-screen buffer and hide the cursor for the session.
+        output = sys.stdout.buffer
+        output.write(b'\x1b[?1004h\x1b[?1049h\x1b[?25l\x1b[2J')
+        output.flush()
+
+        while True:
+            frame_start = time.perf_counter()
+            elapsed = frame_start - last_frame_time
+            last_frame_time = frame_start
+
+            # Poll config file each frame (cheap check)
+            signature = check_config()
+            if signature is not None:
+                try:
+                    new_cfg, new_colors = load_runtime_config()
+                    cfg.update(new_cfg)
+                    palette_colors = new_colors
+                    palette = compile_palette(palette_colors)
+                    _config_cache['signature'] = signature
+                except (OSError, ConfigError, ValueError) as exc:
+                    # An editor may briefly leave a partial file while saving.
+                    # Keep the last valid settings and try again next frame.
+                    sys.stderr.write(f'\x1b[HConfig error: {exc}\x1b[K\n')
+
+            # Invisible controls: 0-9 directly load presets, Alt+S saves the
+            # last selected slot, Ctrl+0-9 loads LUTs, and letter pairs adjust
+            # parameters with Shift/Ctrl coarse steps.
+            selected_preset, changed_colors = poll_hotkeys(
+                cfg, palette_colors, selected_preset, frame_start)
+            if changed_colors is not None:
+                palette_colors = changed_colors
+                palette = compile_palette(palette_colors)
+
+            t += elapsed * 2.0 * cfg['speed']
+            frame = render(
+                t,
+                palette,
+                hue_shift=cfg['hue_shift'],
+                fx=cfg['fx'],
+                fy=cfg['fy'],
+                rad=cfg['rad'],
+                frame_time=frame_start,
+            )
+            output.write(frame.encode('ascii'))
+            output.flush()
+
+            delay = (1.0 / cfg['fps']) - (time.perf_counter() - frame_start)
+            if delay > 0:
+                time.sleep(delay)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _keyboard_ownership.revoke()
+        clear_transient_keyboard_state()
+        output.write(b'\x1b[0m\x1b[?25h\x1b[?1049l\x1b[?1004l')
+        output.flush()
+        if timer_period_set:
+            ctypes.windll.winmm.timeEndPeriod(1)
+
+if __name__ == '__main__':
+    main()
