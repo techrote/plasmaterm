@@ -2,7 +2,8 @@
 
 **PlasmaTerm is developed targetting Windows Terminal. And has only been tested in Windows Terminal**
 
-
+Web Demo, less performant, but portable. Based on frozen v0.1a.
+https://techrote.github.io/plasmaterm/
 
 
 
