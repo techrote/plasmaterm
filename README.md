@@ -35,3 +35,21 @@ Modifiers:
 
 Parameter changes update the "live" config immediately, and external edits to the config file should be applied instantly upon saving.
 
+If config file is absent, plasma.py imports the generator plasma_config_gen.py and creates a complete config atomically.
+
+
+plasma_config_gen.py details:
+
+
+GENERATOR_VERSION = 1
+* Explicit MASTER_SEED
+* SHA-256 slot derivation
+* Explicit SplitMix64 PRNG
+
+plasma_config_gen.py Workflow:
+* Each requested base slot directly generates ten independent preset/LUT pairs.
+* Generated configs contain resolved values; normal saving never depends on seeds or the generator.
+* Frequencies, speed, radius, hue movement, and LUTs use constrained/correlated generation.
+* LUTs are smooth, cyclic 256-colour curves rather than random colour noise.
+* Generated defaults retain 256 colours and 40 FPS.
+
