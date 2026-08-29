@@ -1,8 +1,11 @@
 import argparse
 import ctypes
+import json
 import math
 import os
 import re
+import secrets
+import subprocess
 import sys
 import tempfile
 import time
@@ -19,6 +22,21 @@ _config_cache = {'signature': None}
 LUT_KEYS = '0123456789'
 LUT_SIZE = 256
 MAX_PALETTE_SIZE = 1024
+RUNNING_IN_BROWSER = sys.platform == 'emscripten'
+_browser_terminal_size = os.terminal_size((80, 24))
+
+def set_browser_terminal_size(columns, lines):
+    """Update the terminal dimensions supplied by the browser host."""
+    global _browser_terminal_size
+    columns = max(2, int(columns))
+    lines = max(2, int(lines))
+    _browser_terminal_size = os.terminal_size((columns, lines))
+
+def get_plasmaterm_size():
+    """Return host dimensions without changing native terminal behaviour."""
+    if RUNNING_IN_BROWSER:
+        return _browser_terminal_size
+    return os.get_terminal_size()
 
 def ensure_config_file():
     """Generate a complete default config only when plasma.conf is absent."""
@@ -59,6 +77,8 @@ PARAMETER_KEYS = {
     'O': ('fps', 1.0),
     'L': ('fps', -1.0),
 }
+RANDOMIZE_KEY = 'P'
+RANDOM_SLOT_LIMIT = 2 ** 31
 
 _key_down = {}
 _key_repeat_at = {}
@@ -75,6 +95,7 @@ def _command_virtual_keys():
     """Return every key whose transient state belongs to PlasmaTerm."""
     return ({ord(key) for key in LUT_KEYS}
             | {ord(key) for key in PARAMETER_KEYS}
+            | {ord(RANDOMIZE_KEY)}
             | {VK_SHIFT, VK_CONTROL, VK_ALT})
 
 def clear_transient_keyboard_state(suppress_held=False):
@@ -436,26 +457,53 @@ def _apply_parameter_delta(cfg, key, factor):
         value = round(value, 10)
     cfg[name] = value
 
-def poll_hotkeys(cfg, colors, selected_preset, now=None):
-    """Handle invisible direct-load, save, LUT, and parameter controls."""
-    if os.name != 'nt':
-        return selected_preset, None
+def randomize_config(slot=None):
+    """Regenerate the complete configuration from one random generator slot.
 
-    # Authoritative gate: no individual command may bypass viewport ownership.
-    if not _keyboard_ownership.refresh_document_focus():
-        return selected_preset, None
+    Native Python invokes the generator as a safe absolute-path command. The
+    browser cannot spawn processes, so it uses the generator's existing API.
+    In both cases the generator owns the atomic replacement operation.
+    """
+    if slot is None:
+        slot = secrets.randbelow(RANDOM_SLOT_LIMIT)
+    if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0:
+        raise ValueError('slot must be a non-negative integer')
 
-    if now is None:
-        now = time.perf_counter()
-    shift = _modifier_is_down(VK_SHIFT)
-    ctrl = _modifier_is_down(VK_CONTROL)
-    alt = _modifier_is_down(VK_ALT)
+    generator_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'plasma_config_gen.py')
+    if RUNNING_IN_BROWSER:
+        from plasma_config_gen import generate_config
+        generate_config(slot, output_path=CONFIG_FILE)
+    else:
+        subprocess.run(
+            [sys.executable, generator_path, str(slot),
+             '--output', os.path.abspath(CONFIG_FILE)],
+            check=True,
+        )
+    return slot
+
+def _dispatch_hotkeys(cfg, colors, selected_preset, poll_key,
+                      modifier_is_down, now):
+    """Apply shared command semantics using a host-specific logical key API."""
+    shift = modifier_is_down(VK_SHIFT)
+    ctrl = modifier_is_down(VK_CONTROL)
+    alt = modifier_is_down(VK_ALT)
     factor = 100 if ctrl else 10 if shift else 1
     changed = False
 
-    # Number row: direct preset load, or Ctrl+number for direct LUT load.
+    randomize_pressed, _ = poll_key(ord(RANDOMIZE_KEY), now)
+    if randomize_pressed and not (shift or ctrl or alt):
+        try:
+            random_slot = randomize_config()
+            new_cfg, new_colors = load_runtime_config()
+        except (OSError, ConfigError, ValueError, subprocess.SubprocessError):
+            return selected_preset, None, None, False
+        cfg.clear()
+        cfg.update(new_cfg)
+        return 0, new_colors, random_slot, True
+
     for digit in LUT_KEYS:
-        pressed, _ = _poll_virtual_key(ord(digit), now)
+        pressed, _ = poll_key(ord(digit), now)
         if not pressed or alt or shift:
             continue
         if ctrl:
@@ -476,14 +524,15 @@ def poll_hotkeys(cfg, colors, selected_preset, now=None):
                 cfg.update(preset)
                 changed = True
 
-    # Letter columns adjust parameters. Holding a key repeats after a delay.
+    saved = False
     for key in PARAMETER_KEYS:
-        pressed, repeated = _poll_virtual_key(ord(key), now)
+        pressed, repeated = poll_key(ord(key), now)
         if not (pressed or repeated):
             continue
         if key == 'S' and alt:
             if pressed:
                 write_section(f'preset-{selected_preset}', cfg)
+                saved = True
             continue
         if alt:
             continue
@@ -494,10 +543,194 @@ def poll_hotkeys(cfg, colors, selected_preset, now=None):
         try:
             colors = resolve_palette(cfg)
         except (ConfigError, KeyError, ValueError):
-            return selected_preset, None
+            return selected_preset, None, None, saved
         write_section('config', cfg)
-        return selected_preset, colors
-    return selected_preset, None
+        return selected_preset, colors, None, True
+    return selected_preset, None, None, saved
+
+def poll_hotkeys(cfg, colors, selected_preset, now=None):
+    """Handle invisible direct-load, save, LUT, and parameter controls."""
+    if os.name != 'nt':
+        return selected_preset, None
+
+    # Authoritative gate: no individual command may bypass viewport ownership.
+    if not _keyboard_ownership.refresh_document_focus():
+        return selected_preset, None
+
+    if now is None:
+        now = time.perf_counter()
+    selected_preset, new_colors, _, _ = _dispatch_hotkeys(
+        cfg, colors, selected_preset, _poll_virtual_key,
+        _modifier_is_down, now)
+    return selected_preset, new_colors
+
+class BrowserKeyboardState:
+    """Logical browser key state with native-equivalent repeat semantics."""
+
+    def __init__(self):
+        self.owned = False
+        self._down = set()
+        self._pressed = set()
+        self._repeat_at = {}
+        self.update_count = 0
+        self.pressed_poll_count = 0
+        self.last_action = ''
+
+    def set_owned(self, owned):
+        owned = bool(owned)
+        if owned != self.owned:
+            self.clear()
+        self.owned = owned
+
+    def clear(self):
+        self._down.clear()
+        self._pressed.clear()
+        self._repeat_at.clear()
+
+    def update(self, action, vk, shift=False, ctrl=False, alt=False):
+        if not self.owned:
+            return
+        self.update_count += 1
+        self.last_action = f'{action}:{vk}'
+        for modifier, down in ((VK_SHIFT, shift), (VK_CONTROL, ctrl),
+                               (VK_ALT, alt)):
+            if down:
+                self._down.add(modifier)
+            else:
+                self._down.discard(modifier)
+        if action == 'down':
+            if vk not in self._down:
+                self._pressed.add(vk)
+            self._down.add(vk)
+        elif action == 'up':
+            self._down.discard(vk)
+            self._repeat_at.pop(vk, None)
+
+    def poll(self, vk, now):
+        if not self.owned:
+            return False, False
+        pressed = vk in self._pressed
+        self._pressed.discard(vk)
+        if pressed:
+            self.pressed_poll_count += 1
+        down = vk in self._down
+        repeated = False
+        if pressed:
+            self._repeat_at[vk] = now + KEY_REPEAT_DELAY
+        elif down and now >= self._repeat_at.get(vk, float('inf')):
+            repeated = True
+            self._repeat_at[vk] = now + KEY_REPEAT_INTERVAL
+        elif not down:
+            self._repeat_at.pop(vk, None)
+        return pressed, repeated
+
+    def modifier_is_down(self, vk):
+        return self.owned and vk in self._down
+
+class BrowserRuntime:
+    """Small frame-at-a-time host for Pyodide's yielding worker loop."""
+
+    def __init__(self, columns=80, lines=24, synchronized_output=False):
+        set_browser_terminal_size(columns, lines)
+        generated = ensure_config_file()
+        self.cfg, self.palette_colors = load_runtime_config()
+        self.palette = compile_palette(self.palette_colors)
+        self.keyboard = BrowserKeyboardState()
+        self.keyboard.set_owned(True)
+        self.synchronized_output = bool(synchronized_output)
+        self.selected_preset = 0
+        self.last_random_slot = None
+        self.t = 0.0
+        self.last_frame_time = None
+        self._persistence_dirty = generated
+
+    def set_size(self, columns, lines):
+        set_browser_terminal_size(columns, lines)
+
+    def set_keyboard_ownership(self, owned):
+        self.keyboard.set_owned(owned)
+
+    def handle_key_event(self, action, key, shift=False, ctrl=False, alt=False):
+        names = {'SHIFT': VK_SHIFT, 'CONTROL': VK_CONTROL, 'ALT': VK_ALT}
+        action = str(action)
+        normalized = str(key).upper()
+        if normalized in names:
+            vk = names[normalized]
+        elif len(normalized) == 1:
+            vk = ord(normalized)
+        else:
+            return
+        self.keyboard.update(action, vk, shift, ctrl, alt)
+
+    def _reload_external_config(self):
+        signature = check_config()
+        if signature is None:
+            return
+        try:
+            new_cfg, new_colors = load_runtime_config()
+        except (OSError, ConfigError, ValueError):
+            return
+        self.cfg.update(new_cfg)
+        self.palette_colors = new_colors
+        self.palette = compile_palette(new_colors)
+        _config_cache['signature'] = signature
+
+    def step(self, frame_time=None):
+        if frame_time is None:
+            frame_time = time.perf_counter()
+        if self.last_frame_time is None:
+            elapsed = 0.0
+        else:
+            elapsed = max(0.0, frame_time - self.last_frame_time)
+        self.last_frame_time = frame_time
+
+        self._reload_external_config()
+        selected, changed_colors, random_slot, persistence_dirty = _dispatch_hotkeys(
+            self.cfg, self.palette_colors, self.selected_preset,
+            self.keyboard.poll, self.keyboard.modifier_is_down, frame_time)
+        self.selected_preset = selected
+        if changed_colors is not None:
+            self.palette_colors = changed_colors
+            self.palette = compile_palette(changed_colors)
+            self._persistence_dirty = True
+        if random_slot is not None:
+            self.last_random_slot = random_slot
+        if persistence_dirty:
+            self._persistence_dirty = True
+
+        self.t += elapsed * 2.0 * self.cfg['speed']
+        return render(
+            self.t,
+            self.palette,
+            hue_shift=self.cfg['hue_shift'],
+            fx=self.cfg['fx'],
+            fy=self.cfg['fy'],
+            rad=self.cfg['rad'],
+            frame_time=frame_time,
+            synchronized_output=self.synchronized_output,
+        )
+
+    def frame_interval_ms(self):
+        return 1000.0 / self.cfg['fps']
+
+    def metrics_json(self):
+        """Return bridge-friendly observability without nested Python proxies."""
+        return json.dumps({
+            'lastRandomSlot': self.last_random_slot,
+            'freqY': self.cfg['fy'],
+            'activeLut': self.cfg['active_lut'],
+            'keyboardOwned': self.keyboard.owned,
+            'keyUpdates': self.keyboard.update_count,
+            'pressedPolls': self.keyboard.pressed_poll_count,
+            'lastAction': self.keyboard.last_action,
+        })
+
+    def consume_persistence_text(self):
+        if not self._persistence_dirty:
+            return None
+        self._persistence_dirty = False
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as handle:
+            return handle.read()
 
 def hsv(h):
     h = (h % 1.0) * 6
@@ -541,8 +774,8 @@ def compile_palette(colors):
     return palette
 
 def render(t, palette, hue_shift=0.0, fx=0.35, fy=0.45, rad=0.6,
-           frame_time=None):
-    size = os.get_terminal_size()
+           frame_time=None, synchronized_output=True):
+    size = get_plasmaterm_size()
     cols, rows = size.columns, size.lines
     cx, cy = cols / 2, rows / 2
     palette_size = len(palette)
@@ -576,9 +809,10 @@ def render(t, palette, hue_shift=0.0, fx=0.35, fy=0.45, rad=0.6,
 
     # Windows Terminal 1.23+ displays this as one synchronized update when the
     # frame is parsed within its synchronization timeout.
-    return ('\x1b[?2026h\x1b[H'
-            + '\r\n'.join(lines)
-            + '\x1b[0m\x1b[?2026l')
+    frame = '\x1b[H' + '\r\n'.join(lines) + '\x1b[0m'
+    if synchronized_output:
+        return '\x1b[?2026h' + frame + '\x1b[?2026l'
+    return frame
 
 def main():
     ensure_config_file()

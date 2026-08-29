@@ -2,6 +2,8 @@
 
 **PlasmaTerm is developed targetting Windows Terminal. And has only been tested in Windows Terminal**
 
+This `web-v0.1a` branch also includes an isolated browser experiment in [`web/`](web/README.md).
+
 
 
 
@@ -36,6 +38,7 @@ Controls:
 | `U/J`      | Increase/decrease radius                     |
 | `I/K`      | Increase/decrease palette size               |
 | `O/L`      | Increase/decrease FPS                        |
+| `P`        | Randomize the complete config bank once      |
 
 Modifiers:
 
