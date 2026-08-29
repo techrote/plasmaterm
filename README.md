@@ -44,6 +44,63 @@ Modifiers:
 * `Ctrl`: 100× step
 * Holding an adjustment key repeats it
 
+  ## Command-line usage
+
+Run these commands from the PlasmaTerm repository directory.
+
+### PlasmaTerm
+
+Start PlasmaTerm using `plasma.conf`:
+
+```powershell
+python plasma.py
+```
+
+Show the available command-line options:
+
+```powershell
+python plasma.py --help
+```
+
+Command-line parameters provide initial values, but `plasma.conf` is loaded on the first frame and becomes authoritative. Edit the config or use the keyboard controls for persistent changes.
+
+### Configuration generator
+
+Generate the default configuration using procedural slot 0:
+
+```powershell
+python plasma_config_gen.py
+```
+
+Generate a configuration beginning with a different slot:
+
+```powershell
+python plasma_config_gen.py 12
+```
+
+Write the generated configuration to another file:
+
+```powershell
+python plasma_config_gen.py 12 --output custom.conf
+```
+
+The selected slot becomes preset 0; the following nine deterministic slots populate presets 1–9 and their corresponding LUTs.
+
+### Test suite
+
+Run the complete test suite with verbose results:
+
+```powershell
+python -m unittest -v test_plasma_config_gen.py
+```
+
+It can also be run directly:
+
+```powershell
+python test_plasma_config_gen.py
+```
+
+
 Parameter changes update the "live" config immediately, and external edits to the config file should be applied instantly upon saving.
 
 If config file is absent, plasma.py imports the generator plasma_config_gen.py and creates a complete config atomically.
