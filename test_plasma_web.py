@@ -26,7 +26,8 @@ class BrowserPresentationTests(unittest.TestCase):
             cls.worker_javascript = handle.read()
 
     def test_working_page_version_is_incremented(self):
-        self.assertIn('PlasmaTerm web-v0.101a', self.html)
+        self.assertIn('PlasmaTerm web-v0.2b', self.html)
+        self.assertIn("plasmaterm.web-v0.2b.config", self.javascript)
         self.assertIn("plasmaterm.web-v0.101a.config", self.javascript)
 
     def test_desktop_window_is_bounded_and_centre_anchored(self):

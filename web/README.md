@@ -1,7 +1,7 @@
-# PlasmaTerm web-v0.101a
+# PlasmaTerm web-v0.2b
 
 This directory is the bounded browser presentation of the frozen PlasmaTerm
-`v0.1a` release. The page version is `web-v0.101a`; native configuration files
+`v0.1a` release. The page version is `web-v0.2b`; native configuration files
 remain compatible. It runs the repository's Python renderer and
 configuration generator in Pyodide, presents their ANSI output through
 xterm.js, and intentionally does not include PlasmaTerm's later TCP control

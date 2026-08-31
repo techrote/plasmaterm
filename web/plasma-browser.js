@@ -1,7 +1,10 @@
-const CONFIG_STORAGE_KEY = 'plasmaterm.web-v0.101a.config';
-const LEGACY_CONFIG_STORAGE_KEY = 'plasmaterm.web-v0.1a.config';
-const DISPLAY_STORAGE_KEY = 'plasmaterm.web-v0.101a.display';
-const FPS_DEFAULT_MIGRATION_KEY = 'plasmaterm.web-v0.101a.fps-default-60';
+const CONFIG_STORAGE_KEY = 'plasmaterm.web-v0.2b.config';
+const LEGACY_CONFIG_STORAGE_KEYS = [
+  'plasmaterm.web-v0.101a.config',
+  'plasmaterm.web-v0.1a.config',
+];
+const DISPLAY_STORAGE_KEY = 'plasmaterm.web-v0.2b.display';
+const FPS_DEFAULT_MIGRATION_KEY = 'plasmaterm.web-v0.2b.fps-default-60';
 const DISPLAY_SCHEMA_VERSION = 5;
 const DEFAULT_GRID = Object.freeze({ columns: 36, lines: 24 });
 const DEFAULT_FPS = 60;
@@ -1526,7 +1529,9 @@ new ResizeObserver(() => {
 let restoredConfig = null;
 try {
   restoredConfig = localStorage.getItem(CONFIG_STORAGE_KEY)
-    ?? localStorage.getItem(LEGACY_CONFIG_STORAGE_KEY);
+    ?? LEGACY_CONFIG_STORAGE_KEYS
+      .map((key) => localStorage.getItem(key))
+      .find((contents) => contents !== null);
   if (localStorage.getItem(FPS_DEFAULT_MIGRATION_KEY) !== '1') {
     restoredConfig = restoredConfig?.replace(
       /^fps\s*=\s*24(?:\.0+)?\s*$/m, `fps = ${DEFAULT_FPS}`) ?? null;

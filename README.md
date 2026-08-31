@@ -2,7 +2,7 @@
 
 **PlasmaTerm is developed targetting Windows Terminal. And has only been tested in Windows Terminal**
 
-This `web-v0.1a` branch also includes the bounded `web-v0.101a` browser presentation in [`web/`](web/README.md).
+This `web-v0.1a` branch also includes the bounded `web-v0.2b` browser presentation in [`web/`](web/README.md).
 
 The browser presentation uses a no-scroll workspace with separate PlasmaTerm,
 Keybed, Modulation, and LUT faux-terminal windows. Compact title-bar controls
