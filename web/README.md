@@ -38,7 +38,9 @@ control; minimizing adds a labelled restore button to PlasmaTerm's title bar.
 Restoring returns the window to its last position, clamps it to the viewport,
 and brings it forward. PlasmaTerm's green control toggles between its last good
 desktop geometry and a viewport-filling layout while scaling Pt to retain the
-same character resolution. On narrow/mobile layouts,
+same character resolution. When the viewport is wider than the natural
+monospaced grid, fullscreen also expands cell spacing so all 36 columns fill
+the available width without adding columns. On narrow/mobile layouts,
 where PlasmaTerm already fills the viewport, green instead moves it between the
 front and back of the stack. PlasmaTerm's red control, or `Esc` anywhere on the
 page, restores the Pt 24, 36×24 desktop layout, responsive starting positions,
@@ -59,7 +61,7 @@ exposes three editable display controls:
   accepted). Enter or focus loss applies it to the page and terminal
   background, Modulation highlights, and docked-window tabs with automatic
   contrasting text. This appearance setting resets on reload.
-- **FPS** presets are 24, 30, 60, 120, 144, and 240; direct entry accepts
+- **FPS** presets are 30, 60, 120, 144, and 240; direct entry accepts
   1–1000. The default is 60, and the chosen value persists through presets,
   Randomize, and Randomize Undo.
 

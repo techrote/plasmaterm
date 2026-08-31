@@ -5,13 +5,13 @@ const LEGACY_CONFIG_STORAGE_KEYS = [
 ];
 const DISPLAY_STORAGE_KEY = 'plasmaterm.web-v0.2b.display';
 const FPS_DEFAULT_MIGRATION_KEY = 'plasmaterm.web-v0.2b.fps-default-60';
-const DISPLAY_SCHEMA_VERSION = 5;
+const DISPLAY_SCHEMA_VERSION = 6;
 const DEFAULT_GRID = Object.freeze({ columns: 36, lines: 24 });
 const DEFAULT_FPS = 60;
 const DEFAULT_DISPLAY = Object.freeze({
   version: DISPLAY_SCHEMA_VERSION,
   width: 538,
-  height: 602,
+  height: 708,
   fontSize: 24,
 });
 const PARAMETER_KEYS = new Set('QAWSEDRFTGYHUJIK');
@@ -691,27 +691,28 @@ function setCharacterSize(value, persist = true, refit = true) {
   if (refit) fitTerminal();
 }
 
-function pointSizeForFixedResolution(dimensions) {
-  if (visualRestoreGeometry?.terminalWidth && visualRestoreGeometry?.terminalHeight) {
-    const scale = Math.min(
-      Math.max(1, terminalElement.clientWidth - 8) / visualRestoreGeometry.terminalWidth,
-      Math.max(1, terminalElement.clientHeight - 8) / visualRestoreGeometry.terminalHeight,
-    );
-    return Math.max(6, Math.min(200, Math.floor(
-      visualRestoreGeometry.fontSize * scale)));
-  }
+function setTerminalLetterSpacing(value) {
+  const spacing = Math.max(0, Math.min(100, Number(value) || 0));
+  terminal.options.letterSpacing = spacing;
+  terminalElement.dataset.letterSpacing = spacing.toFixed(2);
+}
+
+function fixedGridPresentation(dimensions) {
   const screen = terminalElement.querySelector('.xterm-screen')?.getBoundingClientRect();
   const currentPt = Math.max(1, display.fontSize);
-  const cellWidthPerPt = screen?.width && terminal.cols
-    ? screen.width / terminal.cols / currentPt : 0.62;
-  const cellHeightPerPt = screen?.height && terminal.rows
-    ? screen.height / terminal.rows / currentPt : 1;
-  const width = Math.max(1, terminalElement.clientWidth - 8);
-  const height = Math.max(1, terminalElement.clientHeight - 8);
-  return Math.max(6, Math.min(200, Math.floor(Math.min(
-    width / (dimensions.columns * cellWidthPerPt),
-    height / (dimensions.lines * cellHeightPerPt),
-  ))));
+  const currentSpacing = Math.max(0, Number(terminal.options.letterSpacing) || 0);
+  const width = Math.max(1, terminalElement.clientWidth);
+  const height = Math.max(1, terminalElement.clientHeight);
+  const renderedWidth = screen?.width || dimensions.columns * currentPt * 0.62;
+  const renderedHeight = screen?.height || dimensions.lines * currentPt * 1.18;
+  const naturalWidth = Math.max(1,
+    renderedWidth - currentSpacing * dimensions.columns);
+  const scale = Math.min(width / naturalWidth, height / renderedHeight);
+  const pointSize = Math.max(6, Math.min(200, Math.floor(currentPt * scale)));
+  const projectedNaturalWidth = naturalWidth * pointSize / currentPt;
+  const letterSpacing = Math.max(0,
+    Math.round((width - projectedNaturalWidth) / dimensions.columns * 100) / 100);
+  return { pointSize, letterSpacing };
 }
 
 const commitCharacterField = () => {
@@ -1084,7 +1085,9 @@ function beginVisualGeometryChange() {
 function finishVisualGeometryChange(exactDimensions = null, scalePointSize = false) {
   requestAnimationFrame(() => {
     if (exactDimensions && scalePointSize) {
-      setCharacterSize(pointSizeForFixedResolution(exactDimensions), false, false);
+      const presentation = fixedGridPresentation(exactDimensions);
+      setCharacterSize(presentation.pointSize, false, false);
+      setTerminalLetterSpacing(presentation.letterSpacing);
     }
     plasmaWindow.classList.remove('is-resizing');
     liveResizing = false;
@@ -1129,8 +1132,6 @@ function toggleVisualMode() {
       fontSize: display.fontSize,
       columns: terminal.cols,
       lines: terminal.rows,
-      terminalWidth: Math.max(1, terminalElement.clientWidth - 8),
-      terminalHeight: Math.max(1, terminalElement.clientHeight - 8),
       x: current.x,
       y: current.y,
     };
@@ -1154,6 +1155,7 @@ function toggleVisualMode() {
     fixedDimensions = { columns: restore.columns, lines: restore.lines };
     visualFixedDimensions = null;
     setWindowSize(restore.width, restore.height, false);
+    setTerminalLetterSpacing(0);
     setCharacterSize(restore.fontSize, false, false);
     const recovered = clampWindowCenter(plasmaWindow, restore.x, restore.y);
     setWindowCenter(plasmaWindow, recovered.x, recovered.y);
@@ -1175,6 +1177,7 @@ function resetWorkspaceLayout() {
   updateVisualModeLabel();
   display = { ...DEFAULT_DISPLAY };
   setWindowSize(display.width, display.height, false);
+  setTerminalLetterSpacing(0);
   setCharacterSize(display.fontSize, false, false);
   saveDisplay();
   setWindowDocked('controls', false, false);
@@ -1239,7 +1242,9 @@ window.addEventListener('resize', () => {
     setWindowCenter(element, recovered.x, recovered.y);
   }
   if (visualMaximized && visualFixedDimensions) {
-    setCharacterSize(pointSizeForFixedResolution(visualFixedDimensions), false, false);
+    const presentation = fixedGridPresentation(visualFixedDimensions);
+    setCharacterSize(presentation.pointSize, false, false);
+    setTerminalLetterSpacing(presentation.letterSpacing);
     fitTerminal('resize', visualFixedDimensions);
   } else {
     fitTerminal();

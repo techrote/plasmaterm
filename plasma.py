@@ -83,7 +83,7 @@ ENERGY_PARAMETERS = (
 )
 ENERGY_WAVES = frozenset(
     ('sine', 'smooth-triangle', 'loop-noise', 'wander-noise'))
-WEB_FPS_OPTIONS = (24.0, 30.0, 60.0, 120.0, 144.0, 240.0)
+WEB_FPS_OPTIONS = (30.0, 60.0, 120.0, 144.0, 240.0)
 WEB_DEFAULT_FPS = 60.0
 WEB_KEYBED_KEYS = frozenset(('Q', 'A', 'W', 'S', 'T', 'G', 'Y', 'H',
                              'U', 'J'))

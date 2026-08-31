@@ -32,7 +32,7 @@ class BrowserPresentationTests(unittest.TestCase):
 
     def test_desktop_window_is_bounded_and_centre_anchored(self):
         self.assertIn('--plasma-width: 538px', self.html)
-        self.assertIn('--plasma-height: 602px', self.html)
+        self.assertIn('--plasma-height: 708px', self.html)
         self.assertIn('transform: translate(-50%, -50%)', self.html)
         self.assertIn('(Math.abs(moveEvent.clientX - centreX) - startDistanceX) * 2',
                       self.javascript)
@@ -72,19 +72,20 @@ class BrowserPresentationTests(unittest.TestCase):
     def test_title_controls_resize_protocol_and_undo_are_present(self):
         self.assertIn('id="fps-input" type="number" min="1" max="1000"', self.html)
         self.assertIn('id="fps-preset" aria-label="Frame rate presets"', self.html)
-        for fps in (24, 30, 60, 120, 144, 240):
+        for fps in (30, 60, 120, 144, 240):
             self.assertIn(f'<option value="{fps}"', self.html)
+        self.assertNotIn('<option value="24">24</option>', self.html)
         self.assertIn('id="pt-input" type="number" min="6" max="200"', self.html)
         self.assertIn('id="pt-preset" aria-label="Point size presets"', self.html)
         for point_size in (12, 16, 24, 36, 46, 64):
             self.assertIn(f'<option value="{point_size}"', self.html)
         self.assertIn('id="pt-down"', self.html)
         self.assertIn('id="pt-up"', self.html)
-        self.assertIn("const DISPLAY_SCHEMA_VERSION = 5", self.javascript)
+        self.assertIn("const DISPLAY_SCHEMA_VERSION = 6", self.javascript)
         self.assertIn('const DEFAULT_GRID = Object.freeze({ columns: 36, lines: 24 })',
                       self.javascript)
         self.assertIn('width: 538,', self.javascript)
-        self.assertIn('height: 602,', self.javascript)
+        self.assertIn('height: 708,', self.javascript)
         self.assertIn('fontSize: 24,', self.javascript)
         self.assertNotIn('width: stored.width, height: stored.height', self.javascript)
         self.assertIn("type: 'resizePause'", self.javascript)
@@ -94,15 +95,20 @@ class BrowserPresentationTests(unittest.TestCase):
         self.assertIn('const DEFAULT_FPS = 60', self.javascript)
         self.assertIn('let selectedFps = DEFAULT_FPS', self.javascript)
         self.assertIn('`fps = ${DEFAULT_FPS}`', self.javascript)
-        self.assertEqual(plasma.WEB_FPS_OPTIONS[0], 24)
+        self.assertEqual(plasma.WEB_FPS_OPTIONS,
+                         (30.0, 60.0, 120.0, 144.0, 240.0))
         self.assertEqual(plasma.WEB_DEFAULT_FPS, 60)
 
     def test_fullscreen_preserves_grid_by_scaling_point_size(self):
-        self.assertIn('function pointSizeForFixedResolution(dimensions)',
+        self.assertIn('function fixedGridPresentation(dimensions)',
                       self.javascript)
         self.assertIn('columns: terminal.cols,', self.javascript)
         self.assertIn('lines: terminal.rows,', self.javascript)
-        self.assertIn('setCharacterSize(pointSizeForFixedResolution(exactDimensions), false, false)',
+        self.assertIn('setCharacterSize(presentation.pointSize, false, false)',
+                      self.javascript)
+        self.assertIn('setTerminalLetterSpacing(presentation.letterSpacing)',
+                      self.javascript)
+        self.assertIn('renderedWidth - currentSpacing * dimensions.columns',
                       self.javascript)
         self.assertIn("fitTerminal('resizeCommit', exactDimensions)", self.javascript)
         self.assertIn("setWindowDocked('controls', true, false)", self.javascript)
