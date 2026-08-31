@@ -2,44 +2,585 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <meta name="theme-color" content="#050509">
-  <title>PlasmaTerm web-v0.1a</title>
-  <meta name="description" content="The experimental v0.1a PlasmaTerm release, running in your browser through Python/WASM.">
-  <meta property="og:title" content="PlasmaTerm web-v0.1a">
-  <meta property="og:description" content="Python/WASM plasma in your browser.">
+  <title>PlasmaTerm web-v0.101a</title>
+  <meta name="description" content="PlasmaTerm web-v0.101a with compact floating controls, live LUT editing, and Energy modulation.">
+  <meta property="og:title" content="PlasmaTerm web-v0.101a">
+  <meta property="og:description" content="Python/WASM plasma with hands-on browser controls.">
   <meta property="og:type" content="website">
   <meta property="og:image" content="https://techrote.github.io/plasmaterm/web/og.png">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="PlasmaTerm web-v0.1a">
-  <meta name="twitter:description" content="Python/WASM plasma in your browser.">
+  <meta name="twitter:title" content="PlasmaTerm web-v0.101a">
+  <meta name="twitter:description" content="Python/WASM plasma with hands-on browser controls.">
   <meta name="twitter:image" content="https://techrote.github.io/plasmaterm/web/og.png">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><circle cx=%228%22 cy=%228%22 r=%226%22 fill=%22%23c2ff67%22/></svg>">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css">
   <style>
-    :root { color-scheme: dark; background: #050509; }
+    :root {
+      color-scheme: dark;
+      background: #050509;
+      --plasma-width: 900px;
+      --plasma-height: 560px;
+      --toolbar-height: 24px;
+      --chrome: #171421;
+      --line: #393249;
+      --muted: #aaa3ba;
+      --accent: #c2ff67;
+      --accent-rgb: 194 255 103;
+      --hot: #ff4fa3;
+      --danger: #ff5264;
+      --display-bg: #050509;
+      --display-bg-rgb: 5 5 9;
+      --display-contrast: #fff;
+      --energy-highlight: #c2ff67;
+      --energy-highlight-rgb: 194 255 103;
+      --energy-contrast: #101506;
+      --dock-colour: #312917;
+      --dock-foreground: #fff1b4;
+    }
     * { box-sizing: border-box; }
-    html, body, main, #terminal { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-    body { background: radial-gradient(circle at 50% 45%, #12101d 0, #050509 55%); }
-    main { padding: clamp(6px, 1vw, 12px); }
-    #terminal { outline: none; }
+    [hidden] { display: none !important; }
+    html, body { width: 100%; height: 100%; height: 100dvh; margin: 0; overflow: hidden; overscroll-behavior: none; }
+    button, input, select { font: inherit; }
+    body {
+      color: #eeeaf7;
+      background: radial-gradient(circle at 50% 38%, #1c1730 0, #090711 44rem, #050509 70rem), #050509;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    body.has-custom-background { background: var(--display-bg); }
+    .workspace { position: fixed; inset: 0; overflow: hidden; isolation: isolate; }
+    .faux-window {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      z-index: 20;
+      transform: translate(-50%, -50%);
+      overflow: hidden;
+      border: 1px solid #514763;
+      border-radius: 8px;
+      background: #050509;
+      box-shadow: 0 18px 65px rgb(0 0 0 / 55%), 0 0 0 1px rgb(255 255 255 / 4%) inset;
+    }
+    .faux-toolbar {
+      position: relative;
+      z-index: 45;
+      display: flex;
+      align-items: stretch;
+      width: 100%;
+      height: var(--toolbar-height);
+      padding: 0;
+      overflow: hidden;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(#1d1928, var(--chrome));
+      font: 9px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+      user-select: none;
+    }
+    .toolbar-drag-region {
+      min-width: 8px;
+      flex: 1 1 auto;
+      cursor: move;
+      touch-action: none;
+    }
+    .traffic-button,
+    .integrated-button,
+    .jog-button {
+      position: relative;
+      flex: 0 0 auto;
+      height: calc(var(--toolbar-height) - 1px);
+      margin: 0;
+      border: 0;
+      border-left: 1px solid #332d40;
+      border-radius: 0;
+      color: #d9d3e5;
+      background: rgb(17 14 24 / 72%);
+      cursor: pointer;
+    }
+    .traffic-button {
+      width: var(--toolbar-height);
+      padding: 0;
+      border-left: 0;
+      border-right: 1px solid #332d40;
+      background: transparent;
+    }
+    .traffic-button::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 8px;
+      height: 8px;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      background: var(--traffic-colour, #efc25b);
+      box-shadow: 0 0 0 1px rgb(0 0 0 / 45%), 0 0 5px color-mix(in srgb, var(--traffic-colour, #efc25b) 38%, transparent);
+    }
+    .traffic-red { --traffic-colour: #ff626f; }
+    .traffic-yellow { --traffic-colour: #efc25b; }
+    .traffic-green { --traffic-colour: #8bd264; }
+    .plasma-toolbar > .traffic-button { width: 14px; border-right: 0; }
+    .plasma-toolbar > #visual-mode { border-right: 1px solid #332d40; }
+    .traffic-button:hover::after,
+    .traffic-button:focus-visible::after { box-shadow: 0 0 0 1px #fff8, 0 0 8px var(--traffic-colour, #efc25b); }
+    .integrated-button { min-width: 28px; padding: 0 6px; }
+    .integrated-button:hover,
+    .integrated-button:focus-visible,
+    .jog-button:hover,
+    .jog-button:focus-visible { color: #101506; outline: none; background: var(--accent); }
+    .integrated-button[aria-pressed="true"] { color: #101506; background: var(--accent); box-shadow: 0 0 10px rgb(var(--accent-rgb) / 55%) inset; }
+    .integrated-button:disabled { opacity: .45; cursor: not-allowed; }
+    .restore-button { color: var(--dock-foreground); background: var(--dock-colour); }
+    .title-control {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: stretch;
+      height: calc(var(--toolbar-height) - 1px);
+      border-left: 1px solid #332d40;
+      color: var(--muted);
+      background: #100e18;
+    }
+    .title-control > span { display: grid; place-items: center; min-width: 21px; padding: 0 4px; }
+    .jog-button { width: 20px; padding: 0; }
+    .title-number {
+      height: 100%;
+      margin: 0;
+      padding: 0 3px;
+      border: 0;
+      border-left: 1px solid #332d40;
+      border-radius: 0;
+      outline: none;
+      color: #f3eef8;
+      background: #09080d;
+      text-align: center;
+      appearance: textfield;
+    }
+    .title-number::-webkit-inner-spin-button,
+    .title-number::-webkit-outer-spin-button { margin: 0; appearance: none; }
+    .title-number:focus { color: #101506; background: var(--accent); }
+    .title-preset {
+      width: 22px;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-left: 1px solid #332d40;
+      border-radius: 0;
+      outline: none;
+      color: transparent;
+      background-color: #09080d;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23d9d3e5' stroke-width='1.5'/%3E%3C/svg%3E");
+      background-position: center;
+      background-repeat: no-repeat;
+      appearance: none;
+      cursor: pointer;
+    }
+    .title-preset:hover,
+    .title-preset:focus-visible { background-color: var(--accent); }
+    .title-preset option { color: #eeeaf7; background: #100e18; }
+    #pt-input { width: 42px; }
+    #bg-input { width: 58px; text-transform: uppercase; }
+    #fps-input { width: 49px; }
+    .title-number.is-invalid { box-shadow: 0 0 0 1px var(--danger) inset; }
+
+    .plasma-window { width: var(--plasma-width); height: var(--plasma-height); z-index: 30; overflow: visible; }
+    .plasma-window.is-maximized { inset: 0 !important; width: 100vw !important; height: 100dvh !important; transform: none !important; border-radius: 0; }
+    .plasma-window.is-maximized .resize-handle { display: none; }
+    .plasma-toolbar { border-radius: 7px 7px 0 0; }
+    .terminal-shell { position: absolute; inset: var(--toolbar-height) 0 0; overflow: hidden; border-radius: 0 0 7px 7px; background: var(--display-bg); }
+    #terminal { width: 100%; height: 100%; outline: none; touch-action: none; }
     .xterm { height: 100%; padding: 0; }
     #status {
-      position: fixed; inset: auto 16px 16px auto; z-index: 2;
-      max-width: min(34rem, calc(100vw - 32px)); padding: 8px 11px;
-      border: 1px solid #2d2940; border-radius: 7px;
-      color: #c8c1db; background: rgb(9 8 15 / 88%);
-      font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
-      transition: opacity 180ms ease;
+      position: absolute;
+      right: 8px;
+      bottom: 8px;
+      z-index: 3;
+      max-width: calc(100% - 16px);
+      padding: 6px 9px;
+      border: 1px solid #2d2940;
+      border-radius: 5px;
+      color: #c8c1db;
+      background: rgb(9 8 15 / 88%);
+      font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
     }
-    #status[hidden] { display: block; opacity: 0; pointer-events: none; }
+    #status[hidden] { display: block !important; opacity: 0; pointer-events: none; }
     #status.error { color: #ffd2d2; border-color: #723535; }
+    .resize-handle { position: absolute; z-index: 50; width: 20px; height: 20px; padding: 0; border: 0; opacity: 0; background: transparent; transition: opacity 120ms ease; touch-action: none; }
+    .plasma-window:hover .resize-handle, .resize-handle:focus-visible, .plasma-window.is-resizing .resize-handle { opacity: 1; }
+    .resize-handle::after { content: ''; position: absolute; width: 11px; height: 11px; border-color: var(--accent); border-style: solid; }
+    .resize-handle.nw { left: -22px; top: -22px; cursor: nwse-resize; }
+    .resize-handle.ne { right: -22px; top: -22px; cursor: nesw-resize; }
+    .resize-handle.sw { left: -22px; bottom: -22px; cursor: nesw-resize; }
+    .resize-handle.se { right: -22px; bottom: -22px; cursor: nwse-resize; }
+    .resize-handle.nw::after { right: 0; bottom: 0; border-width: 0 2px 2px 0; }
+    .resize-handle.ne::after { left: 0; bottom: 0; border-width: 0 0 2px 2px; }
+    .resize-handle.sw::after { right: 0; top: 0; border-width: 2px 2px 0 0; }
+    .resize-handle.se::after { left: 0; top: 0; border-width: 2px 0 0 2px; }
+
+    .controls-window { z-index: 40; width: min(430px, calc(100vw - 8px)); height: 132px; }
+    .controls-body { height: calc(100% - var(--toolbar-height)); padding: 5px; background: linear-gradient(145deg, #09070e, #12101a); }
+    .key-row { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+    .key-row + .key-row { margin-top: 4px; }
+    .keycap {
+      position: relative;
+      min-width: 0;
+      height: 47px;
+      padding: 5px 2px 4px;
+      overflow: hidden;
+      border: 1px solid #4a4258;
+      border-radius: 4px;
+      color: #e6e0ef;
+      background: rgb(28 24 40 / 90%);
+      box-shadow: 0 3px 0 #0d0b13, 0 0 0 1px rgb(255 255 255 / 3%) inset;
+      cursor: pointer;
+      user-select: none;
+      touch-action: none;
+    }
+    .keycap strong { display: block; font: 700 13px/1 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .keycap small { display: block; margin-top: 4px; overflow: hidden; color: #90899e; font: 7px/1 ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .keycap:hover, .keycap:focus-visible { border-color: #837991; outline: none; }
+    .keycap.is-active { transform: translateY(2px); border-color: var(--accent); color: #101506; background: var(--accent); box-shadow: 0 1px 0 #26320f, 0 0 18px rgb(var(--accent-rgb) / 65%); }
+    .keycap.is-active small { color: #26320f; }
+    .undo-dots { display: flex; justify-content: center; gap: 4px; margin-top: 4px; }
+    .undo-dots i { width: 4px; height: 4px; border-radius: 50%; background: #45404d; }
+    .undo-button[data-depth="1"] .undo-dots i:first-child,
+    .undo-button[data-depth="2"] .undo-dots i { background: var(--hot); box-shadow: 0 0 7px rgb(255 79 163 / 80%); }
+    .undo-button:disabled { opacity: .42; cursor: not-allowed; }
+
+    .energy-window {
+      z-index: 40;
+      width: min(256px, calc(100vw - 8px));
+      height: min(318px, calc(100dvh - 8px));
+      --accent: var(--energy-highlight);
+      --accent-rgb: var(--energy-highlight-rgb);
+    }
+    .energy-body {
+      display: grid;
+      grid-template-columns: 46px 52px 65px 65px;
+      grid-template-rows: minmax(154px, 1fr) 52px 30px;
+      gap: 4px;
+      height: calc(100% - var(--toolbar-height));
+      padding: 5px;
+      overflow: hidden;
+      background: linear-gradient(145deg, #09070e, #12101a);
+      font: 8px/1.1 ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    .energy-targets {
+      display: grid;
+      grid-column: 1;
+      grid-row: 1 / 4;
+      grid-template-rows: repeat(5, minmax(0, 1fr));
+      gap: 3px;
+      min-height: 0;
+    }
+    .target-led {
+      display: grid;
+      min-width: 0;
+      padding: 2px 1px;
+      place-items: center;
+      align-content: center;
+      gap: 3px;
+      border: 1px solid #4a4258;
+      border-radius: 3px;
+      color: #777080;
+      background: rgb(28 24 40 / 90%);
+      font-size: 7px;
+      cursor: pointer;
+    }
+    .target-led::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #3d3746; }
+    .target-led[aria-pressed="true"] { color: #ddd7e7; border-color: #756b84; }
+    .target-led[aria-pressed="true"]::before { background: #a59eb0; }
+    .energy-on .target-led[aria-pressed="true"]::before { background: var(--accent); box-shadow: 0 0 0 1px var(--energy-contrast), 0 0 calc(4px + 12px * var(--energy-pulse, 0)) rgb(var(--accent-rgb) / 85%); }
+    .vertical-control,
+    .offset-control {
+      display: grid;
+      min-width: 0;
+      min-height: 0;
+      justify-items: center;
+      overflow: hidden;
+      border: 1px solid #292433;
+      border-radius: 3px;
+      color: var(--muted);
+      background: rgb(26 22 36 / 88%);
+    }
+    .width-control { grid-column: 2; grid-row: 1 / 3; grid-template-rows: auto minmax(0, 1fr); padding: 4px 2px; }
+    .depth-control { grid-column: 3; grid-row: 1; grid-template-rows: auto auto minmax(0, 1fr); padding: 4px 2px; }
+    .rate-control { grid-column: 4; grid-row: 1; grid-template-rows: auto auto minmax(0, 1fr); padding: 4px 2px; }
+    .control-name { display: block; min-width: 0; margin-bottom: 3px; color: #c4bdce; text-align: center; }
+    .numeric-field {
+      width: 40px;
+      height: 19px;
+      margin: 0 0 3px;
+      padding: 1px;
+      border: 1px solid #4a4258;
+      border-radius: 0;
+      color: #eeeaf7;
+      background: #100e18;
+      text-align: center;
+      appearance: textfield;
+    }
+    .numeric-field::-webkit-inner-spin-button,
+    .numeric-field::-webkit-outer-spin-button { margin: 0; appearance: none; }
+    .vertical-slider {
+      align-self: stretch;
+      width: 26px;
+      height: 100%;
+      min-height: 0;
+      margin: 0;
+      accent-color: var(--accent);
+      writing-mode: vertical-lr;
+      direction: rtl;
+    }
+    .width-heading { display: grid; justify-items: center; gap: 2px; min-height: 29px; }
+    #energy-width-output { color: #f2edf8; font-size: 6px; white-space: nowrap; }
+    .vertical-range { position: relative; width: 34px; height: 100%; min-height: 0; --width-min: 0%; --width-max: 100%; }
+    .vertical-range::before { content: ''; position: absolute; left: 15px; top: 3px; bottom: 3px; width: 4px; border-radius: 4px; background: #3c3746; }
+    .width-fill { position: absolute; left: 14px; bottom: var(--width-min); width: 6px; height: calc(var(--width-max) - var(--width-min)); border-radius: 5px; background: var(--accent); box-shadow: 0 0 0 1px var(--energy-contrast), 0 0 8px rgb(var(--accent-rgb) / 55%); }
+    .vertical-range input { position: absolute; inset: 0; width: 34px; height: 100%; margin: 0; pointer-events: none; appearance: none; background: transparent; writing-mode: vertical-lr; direction: rtl; }
+    .vertical-range input::-webkit-slider-runnable-track { background: transparent; }
+    .vertical-range input::-moz-range-track { background: transparent; }
+    .vertical-range input::-webkit-slider-thumb { pointer-events: auto; appearance: none; width: 15px; height: 15px; border: 1px solid #26320f; border-radius: 50%; background: var(--accent); }
+    .vertical-range input::-moz-range-thumb { pointer-events: auto; width: 15px; height: 15px; border: 1px solid #26320f; border-radius: 50%; background: var(--accent); }
+    .offset-control { grid-column: 3 / 5; grid-row: 2; grid-template-rows: auto 1fr; align-items: center; padding: 3px; }
+    .offset-control .control-name { margin: 0; }
+    .offset-row { display: grid; grid-template-columns: minmax(0, 1fr) 39px; align-items: center; gap: 3px; width: 100%; min-width: 0; }
+    #energy-offset { min-width: 0; width: 100%; margin: 0; accent-color: var(--accent); }
+    #energy-offset-output { width: 39px; height: 18px; margin: 0; }
+    .energy-footer { display: grid; grid-column: 2 / 5; grid-row: 3; grid-template-columns: 52px minmax(0, 1fr); gap: 4px; min-width: 0; }
+    .energy-power {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      min-width: 0;
+      margin: 0;
+      padding: 0 3px;
+      border: 1px solid #8d3440;
+      border-radius: 3px;
+      color: #ff9ca5;
+      background: linear-gradient(#35141b, #190d12);
+      cursor: pointer;
+      font-size: 7px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .energy-led { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--danger); box-shadow: 0 0 7px rgb(255 82 100 / 75%), 0 0 0 1px #24090e; }
+    .energy-power[aria-pressed="true"] { border-color: var(--accent); color: var(--energy-contrast); background: var(--accent); }
+    .energy-power[aria-pressed="true"] .energy-led { background: var(--accent); box-shadow: 0 0 0 1px var(--energy-contrast), 0 0 10px rgb(var(--accent-rgb) / 95%); }
+    .wave-control { min-width: 0; }
+    .wave-control select { width: 100%; height: 100%; min-width: 0; margin: 0; padding: 0 3px; border: 1px solid #4a4258; border-radius: 0; color: #eeeaf7; background: #100e18; font-size: 8px; }
+
+    .lut-window { z-index: 40; width: min(642px, calc(100vw - 8px)); height: min(386px, calc(100dvh - 8px)); }
+    .lut-random-button { min-width: 45px; padding-inline: 4px; }
+    .lut-scale-control {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: stretch;
+      height: calc(var(--toolbar-height) - 1px);
+      border-right: 1px solid #332d40;
+      color: var(--muted);
+      background: #100e18;
+    }
+    .lut-scale-control > span { display: grid; min-width: 27px; padding: 0 3px; place-items: center; }
+    #lut-random-scale { width: 34px; }
+    #lut-random-scale-slider { width: 76px; min-width: 38px; height: 100%; margin: 0 3px; padding: 0; accent-color: var(--accent); }
+    .lut-grid {
+      display: grid;
+      grid-template-columns: repeat(16, minmax(0, 1fr));
+      grid-template-rows: repeat(16, minmax(0, 1fr));
+      gap: 1px;
+      width: 100%;
+      height: calc(100% - var(--toolbar-height));
+      padding: 2px;
+      overflow: hidden;
+      background: #050509;
+    }
+    .lut-field {
+      width: 100%;
+      min-width: 0;
+      height: 100%;
+      min-height: 0;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      border: 0;
+      border-radius: 0;
+      outline: 0 solid var(--accent);
+      font: 7px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+      text-align: center;
+      text-transform: uppercase;
+    }
+    .lut-field:focus { position: relative; z-index: 2; outline-width: 1px; }
+    .lut-field.is-invalid { position: relative; z-index: 3; outline: 1px solid var(--danger); }
+
+    @media (max-width: 700px) {
+      .plasma-window { inset: 0 !important; width: 100vw !important; height: 100dvh !important; transform: none !important; border: 0; border-radius: 0; box-shadow: none; }
+      .plasma-toolbar { height: calc(var(--toolbar-height) + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top); }
+      .terminal-shell { inset: calc(var(--toolbar-height) + env(safe-area-inset-top)) 0 env(safe-area-inset-bottom); }
+      .resize-handle { display: none; }
+      .controls-window, .energy-window, .lut-window { max-width: calc(100vw - 8px); max-height: calc(100dvh - 8px); }
+      .title-control > span { min-width: 18px; padding-inline: 2px; }
+      .jog-button { width: 18px; }
+      .restore-button { min-width: 18px; padding-inline: 2px; font-size: 7px; }
+      #pt-input { width: 38px; }
+      #bg-input { width: 48px; }
+      #fps-input { width: 44px; }
+      .lut-random-button { min-width: 39px; padding-inline: 2px; font-size: 7px; }
+      .lut-scale-control > span { min-width: 22px; padding-inline: 2px; font-size: 7px; }
+      #lut-random-scale { width: 30px; }
+      #lut-random-scale-slider { width: 48px; margin-inline: 2px; }
+    }
+    @media (max-width: 700px) and (orientation: portrait) {
+      .lut-window { width: min(322px, calc(100vw - 8px)); height: min(610px, calc(100dvh - 8px)); }
+      .lut-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); grid-template-rows: repeat(32, minmax(0, 1fr)); }
+      .lut-field { font-size: 6px; }
+    }
+    @media (max-height: 440px) and (orientation: landscape) {
+      .controls-window { width: min(410px, calc(50vw - 8px)); }
+      .energy-window { width: min(256px, calc(50vw - 8px)); height: min(318px, calc(100dvh - 8px)); }
+      .lut-window { width: min(642px, calc(100vw - 8px)); height: calc(100dvh - 8px); }
+    }
+    @media (prefers-reduced-motion: reduce) { * { transition-duration: 0s !important; } }
   </style>
 </head>
 <body>
-  <main aria-label="PlasmaTerm terminal viewport">
-    <div id="terminal" tabindex="0" aria-label="Animated PlasmaTerm viewport"></div>
+  <main class="workspace" id="workspace" aria-label="PlasmaTerm workspace">
+    <section class="faux-window controls-window" id="controls-window" aria-label="PlasmaTerm keybed">
+      <div class="faux-toolbar">
+        <button class="traffic-button traffic-yellow" id="dock-controls" type="button" aria-label="Minimize Keybed" aria-controls="controls-window" title="Minimize Keybed"></button>
+        <div class="toolbar-drag-region" data-drag-handle="controls" aria-hidden="true"></div>
+        <button class="integrated-button" id="key-latch-plus" type="button" aria-pressed="false" title="Latch first key multiplier">+</button>
+        <button class="integrated-button" id="key-latch-plusplus" type="button" aria-pressed="false" title="Latch second key multiplier">++</button>
+        <button class="integrated-button" id="reset-keybed" type="button" title="Reset modified parameters and key multipliers">Reset</button>
+      </div>
+      <div class="controls-body">
+        <div class="key-row" id="key-row-top"></div>
+        <div class="key-row" id="key-row-home"></div>
+      </div>
+    </section>
+
+    <section class="faux-window plasma-window" id="plasma-window" aria-label="PlasmaTerm visualization">
+      <div class="faux-toolbar plasma-toolbar">
+        <button class="traffic-button traffic-red" id="global-reset" type="button" aria-label="Reset window layout and display scaling" title="Reset layout"></button>
+        <button class="traffic-button traffic-green" id="visual-mode" type="button" aria-label="Toggle full-viewport visualization" aria-pressed="false" title="Toggle full viewport"></button>
+        <div class="toolbar-drag-region" data-drag-handle="plasma" aria-hidden="true"></div>
+        <button class="integrated-button restore-button" id="restore-controls" type="button" aria-controls="controls-window" aria-expanded="true" hidden>Keybed</button>
+        <button class="integrated-button restore-button" id="restore-energy" type="button" aria-controls="energy-panel" aria-expanded="true" hidden>Modulation</button>
+        <button class="integrated-button restore-button" id="restore-lut" type="button" aria-controls="lut-window" aria-expanded="false">LUT</button>
+        <div class="title-control pt-control">
+          <span>Pt</span>
+          <button class="jog-button" id="pt-down" type="button" aria-label="Decrease point size">−</button>
+          <button class="jog-button" id="pt-up" type="button" aria-label="Increase point size">+</button>
+          <input class="title-number" id="pt-input" type="number" min="6" max="200" step="1" value="24" inputmode="numeric" aria-label="Point size">
+          <select class="title-preset" id="pt-preset" aria-label="Point size presets" title="Point size presets">
+            <option value="" hidden>Preset</option>
+            <option value="12">12</option><option value="16">16</option><option value="24" selected>24</option>
+            <option value="36">36</option><option value="46">46</option><option value="64">64</option>
+          </select>
+        </div>
+        <label class="title-control bg-control" for="bg-input">
+          <span>Bg</span>
+          <input class="title-number" id="bg-input" type="text" maxlength="7" value="050509" autocomplete="off" spellcheck="false" inputmode="text" aria-label="Background colour">
+        </label>
+        <label class="title-control fps-control" for="fps-input">
+          <span>FPS</span>
+          <input class="title-number" id="fps-input" type="number" min="1" max="1000" step="1" value="24" inputmode="numeric" aria-label="Frame rate">
+          <select class="title-preset" id="fps-preset" aria-label="Frame rate presets" title="Frame rate presets">
+            <option value="" hidden>Preset</option>
+            <option value="24" selected>24</option><option value="30">30</option><option value="60">60</option>
+            <option value="120">120</option><option value="144">144</option><option value="240">240</option>
+          </select>
+        </label>
+      </div>
+      <div class="terminal-shell">
+        <div id="terminal" tabindex="0" aria-label="Animated PlasmaTerm viewport. Pinch to scale characters on touch screens."></div>
+        <div id="status" role="status" aria-live="polite">Loading Python/WASM…</div>
+      </div>
+      <button class="resize-handle nw" type="button" data-corner="nw" aria-label="Resize PlasmaTerm from top left"></button>
+      <button class="resize-handle ne" type="button" data-corner="ne" aria-label="Resize PlasmaTerm from top right"></button>
+      <button class="resize-handle sw" type="button" data-corner="sw" aria-label="Resize PlasmaTerm from bottom left"></button>
+      <button class="resize-handle se" type="button" data-corner="se" aria-label="Resize PlasmaTerm from bottom right"></button>
+    </section>
+
+    <section class="faux-window energy-window" id="energy-panel" aria-label="Energy modulation">
+      <div class="faux-toolbar">
+        <button class="traffic-button traffic-yellow" id="dock-energy" type="button" aria-label="Minimize Modulation" aria-controls="energy-panel" title="Minimize Modulation"></button>
+        <div class="toolbar-drag-region" data-drag-handle="energy" aria-hidden="true"></div>
+        <button class="integrated-button" id="reset-energy" type="button" title="Reset Energy modulation settings">Reset</button>
+      </div>
+      <div class="energy-body">
+        <div class="energy-targets" aria-label="Energy targets">
+          <button class="target-led" type="button" data-energy-target="freq-y" data-target-bit="0" aria-pressed="false">Y freq</button>
+          <button class="target-led" type="button" data-energy-target="freq-x" data-target-bit="1" aria-pressed="false">X freq</button>
+          <button class="target-led" type="button" data-energy-target="speed" data-target-bit="2" aria-pressed="true">Speed</button>
+          <button class="target-led" type="button" data-energy-target="hue-shift" data-target-bit="3" aria-pressed="false">Hue</button>
+          <button class="target-led" type="button" data-energy-target="radius" data-target-bit="4" aria-pressed="false">Radius</button>
+        </div>
+
+        <div class="vertical-control width-control" role="group" aria-labelledby="width-label">
+          <header class="width-heading" id="width-label"><span>Width</span><output id="energy-width-output">−100…+100%</output></header>
+          <div class="vertical-range" id="energy-width-track">
+            <span class="width-fill" aria-hidden="true"></span>
+            <input id="energy-width-min" aria-label="Width minimum" type="range" orient="vertical" min="-100" max="100" step="1" value="-100">
+            <input id="energy-width-max" aria-label="Width maximum" type="range" orient="vertical" min="-100" max="100" step="1" value="100">
+          </div>
+        </div>
+
+        <label class="vertical-control depth-control">
+          <span class="control-name">Energy</span>
+          <input class="numeric-field" id="energy-depth-output" type="number" min="0" max="100" step="1" value="25" aria-label="Energy value">
+          <input class="vertical-slider" id="energy-depth" type="range" orient="vertical" min="0" max="100" step="1" value="25">
+        </label>
+
+        <label class="vertical-control rate-control">
+          <span class="control-name">Rate</span>
+          <input class="numeric-field" id="energy-rate-output" type="number" min="-6" max="6" step="0.05" value="1" aria-label="Energy rate value">
+          <input class="vertical-slider" id="energy-rate" type="range" orient="vertical" min="-3" max="3" step="0.05" value="1">
+        </label>
+
+        <label class="offset-control">
+          <span class="control-name">Offset</span>
+          <span class="offset-row">
+            <input id="energy-offset" type="range" min="-100" max="100" step="1" value="0" aria-label="Energy offset">
+            <input class="numeric-field" id="energy-offset-output" type="number" min="-100" max="100" step="1" value="0" aria-label="Energy offset value">
+          </span>
+        </label>
+
+        <div class="energy-footer">
+          <button class="energy-power" id="energy-power" type="button" aria-pressed="false"><span class="energy-led" aria-hidden="true"></span><span class="power-label">Off</span></button>
+          <label class="wave-control">
+            <select id="energy-wave" aria-label="Energy waveform">
+              <option value="sine">Sine</option>
+              <option value="smooth-triangle">Smooth triangle</option>
+              <option value="loop-noise">Loop noise</option>
+              <option value="wander-noise">Wander noise</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <section class="faux-window lut-window" id="lut-window" aria-label="LUT editor" hidden>
+      <div class="faux-toolbar">
+        <button class="traffic-button traffic-yellow" id="dock-lut" type="button" aria-label="Minimize LUT editor" aria-controls="lut-window" title="Minimize LUT"></button>
+        <button class="integrated-button lut-random-button" id="randomise-lut" type="button" title="Randomise the current LUT using the selected scale" disabled>Randomise</button>
+        <label class="lut-scale-control" for="lut-random-scale">
+          <span>Scale</span>
+          <input class="title-number" id="lut-random-scale" type="number" min="0" max="100" step="1" value="25" inputmode="numeric" aria-label="LUT randomise scale percent">
+          <input id="lut-random-scale-slider" type="range" min="0" max="100" step="1" value="25" aria-label="LUT randomise scale percent slider">
+        </label>
+        <div class="toolbar-drag-region" data-drag-handle="lut" aria-hidden="true"></div>
+        <button class="integrated-button" id="export-lut" type="button" title="Copy LUT values to the clipboard" disabled>Export</button>
+      </div>
+      <div class="lut-grid" id="lut-grid" role="grid" aria-label="Editable 256-colour LUT"></div>
+    </section>
   </main>
-  <div id="status" role="status" aria-live="polite">Loading Python/WASM…</div>
+  <script>
+    if (location.protocol === 'file:') {
+      const status = document.querySelector('#status');
+      status.classList.add('error');
+      status.textContent = 'PlasmaTerm needs HTTP. From the repository root run: python -m http.server 8000';
+    }
+  </script>
   <script type="module" src="./plasma-browser.js"></script>
 </body>
 </html>

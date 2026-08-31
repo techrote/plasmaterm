@@ -66,17 +66,27 @@ PARAMETER_KEYS = {
     'D': ('hue_start', -1.0),
     'R': ('hue_end', 1.0),
     'F': ('hue_end', -1.0),
-    'T': ('speed', 0.02),
-    'G': ('speed', -0.02),
-    'Y': ('hue_shift', 1.0),
-    'H': ('hue_shift', -1.0),
+    'T': ('speed', 0.03),
+    'G': ('speed', -0.03),
+    'Y': ('hue_shift', 0.5),
+    'H': ('hue_shift', -0.5),
     'U': ('rad', 0.01),
     'J': ('rad', -0.01),
-    'I': ('palette_size', 1),
-    'K': ('palette_size', -1),
-    'O': ('fps', 1.0),
-    'L': ('fps', -1.0),
 }
+LUT_CYCLE_KEYS = {'I': 1, 'K': -1}
+ENERGY_PARAMETERS = (
+    ('fy', 0.003, 'freq-y'),
+    ('fx', 0.003, 'freq-x'),
+    ('speed', 0.02, 'speed'),
+    ('hue_shift', 0.005, 'hue-shift'),
+    ('rad', 0.005, 'radius'),
+)
+ENERGY_WAVES = frozenset(
+    ('sine', 'smooth-triangle', 'loop-noise', 'wander-noise'))
+WEB_FPS_OPTIONS = (24.0, 30.0, 60.0, 120.0, 144.0, 240.0)
+WEB_KEYBED_KEYS = frozenset(('Q', 'A', 'W', 'S', 'T', 'G', 'Y', 'H',
+                             'U', 'J'))
+KEYBED_PARAMETER_NAMES = ('fy', 'fx', 'speed', 'hue_shift', 'rad')
 RANDOMIZE_KEY = 'P'
 RANDOM_SLOT_LIMIT = 2 ** 31
 
@@ -95,6 +105,7 @@ def _command_virtual_keys():
     """Return every key whose transient state belongs to PlasmaTerm."""
     return ({ord(key) for key in LUT_KEYS}
             | {ord(key) for key in PARAMETER_KEYS}
+            | {ord(key) for key in LUT_CYCLE_KEYS}
             | {ord(RANDOMIZE_KEY)}
             | {VK_SHIFT, VK_CONTROL, VK_ALT})
 
@@ -220,8 +231,8 @@ def validate_config(values):
     if not 2 <= values['palette_size'] <= MAX_PALETTE_SIZE:
         raise ValueError(
             f'palette-size must be between 2 and {MAX_PALETTE_SIZE}')
-    if not 1.0 <= values['fps'] <= 240.0:
-        raise ValueError('fps must be between 1 and 240')
+    if not 1.0 <= values['fps'] <= 1000.0:
+        raise ValueError('fps must be between 1 and 1000')
     if values['active_lut'] not in ('none', *LUT_KEYS):
         raise ValueError('active-lut must be none or a number from 0 to 9')
     if not all(math.isfinite(value) for key, value in values.items()
@@ -271,11 +282,8 @@ def _section_text(values):
         lines.append(f'{file_name} = {value}')
     return '\n'.join(lines)
 
-def write_section(section, values):
-    """Atomically add or replace one INI section while preserving comments."""
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as handle:
-        original = handle.read()
-
+def _replace_section_text(original, section, values):
+    """Return config text with one INI section added or replaced."""
     pattern = re.compile(
         rf'^\[{re.escape(section)}\][ \t]*\r?\n.*?(?=^\[|\Z)',
         re.MULTILINE | re.DOTALL,
@@ -298,30 +306,13 @@ def write_section(section, values):
     else:
         replacement = f'[{section}]\n{_section_text(values)}\n'
         updated = original.rstrip() + '\n\n' + replacement
+    return updated
 
-    config_dir = os.path.dirname(CONFIG_FILE)
-    fd, temp_path = tempfile.mkstemp(
-        prefix='.plasma-', suffix='.tmp', dir=config_dir, text=True)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as handle:
-            handle.write(updated)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, CONFIG_FILE)
-    except Exception:
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
-        raise
 
-def write_lut(slot, colors):
-    """Atomically add or replace one fixed-size hexadecimal LUT section."""
+def _replace_lut_text(original, slot, colors):
+    """Return config text with one fixed-size LUT added or replaced."""
     if slot not in LUT_KEYS or len(colors) != LUT_SIZE:
         raise ValueError('LUT writes require a valid slot and 256 colours')
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as handle:
-        original = handle.read()
-
     rows = [' '.join(colors[i:i + 8]) for i in range(0, LUT_SIZE, 8)]
     replacement = (f'[lut-{slot}]\ncolors =\n    '
                    + '\n    '.join(rows) + '\n')
@@ -332,10 +323,12 @@ def write_lut(slot, colors):
     )
     match = pattern.search(original)
     if match:
-        updated = original[:match.start()] + replacement + original[match.end():]
-    else:
-        updated = original.rstrip() + '\n\n' + replacement
+        return original[:match.start()] + replacement + original[match.end():]
+    return original.rstrip() + '\n\n' + replacement
 
+
+def _write_config_text(updated):
+    """Atomically replace plasma.conf with already-rendered text."""
     config_dir = os.path.dirname(CONFIG_FILE)
     fd, temp_path = tempfile.mkstemp(
         prefix='.plasma-', suffix='.tmp', dir=config_dir, text=True)
@@ -351,6 +344,29 @@ def write_lut(slot, colors):
         except OSError:
             pass
         raise
+
+
+def write_section(section, values):
+    """Atomically add or replace one INI section while preserving comments."""
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as handle:
+        original = handle.read()
+    _write_config_text(_replace_section_text(original, section, values))
+
+
+def write_lut(slot, colors):
+    """Atomically add or replace one fixed-size hexadecimal LUT section."""
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as handle:
+        original = handle.read()
+    _write_config_text(_replace_lut_text(original, slot, colors))
+
+
+def write_lut_and_config(slot, colors, values):
+    """Atomically persist a LUT and its activating config transaction."""
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as handle:
+        original = handle.read()
+    updated = _replace_lut_text(original, slot, colors)
+    updated = _replace_section_text(updated, 'config', values)
+    _write_config_text(updated)
 
 def load_lut(slot, parser=None):
     """Load and validate one fixed 256-colour hexadecimal LUT."""
@@ -452,10 +468,47 @@ def _apply_parameter_delta(cfg, key, factor):
     if name == 'palette_size':
         value = max(2, min(MAX_PALETTE_SIZE, int(round(value))))
     elif name == 'fps':
-        value = max(1.0, min(240.0, round(value, 10)))
+        value = max(1.0, min(1000.0, round(value, 10)))
     else:
         value = round(value, 10)
     cfg[name] = value
+
+
+def _noise_gradient(index):
+    """Return a deterministic signed gradient for an integer lattice point."""
+    value = math.sin(int(index) * 127.1 + 311.7) * 43758.5453123
+    return (value - math.floor(value)) * 2.0 - 1.0
+
+
+def _gradient_noise(position, period=None):
+    """Return smooth deterministic 1D gradient noise near the range -1..1."""
+    lattice = math.floor(position)
+    fraction = position - lattice
+    left_index = lattice if period is None else lattice % period
+    right_index = lattice + 1 if period is None else (lattice + 1) % period
+    left = _noise_gradient(left_index) * fraction
+    right = _noise_gradient(right_index) * (fraction - 1.0)
+    fade = fraction ** 3 * (fraction * (fraction * 6.0 - 15.0) + 10.0)
+    return max(-1.0, min(1.0, (left + (right - left) * fade) * 2.5))
+
+
+def energy_wave_value(wave, position):
+    """Return a normalized oscillator sample for a signed phase position."""
+    if wave not in ENERGY_WAVES:
+        raise ValueError(f'unsupported energy wave: {wave}')
+    position = float(position)
+    phase = position % 1.0
+    if wave == 'sine':
+        return math.sin(phase * 2.0 * math.pi)
+    if wave == 'smooth-triangle':
+        triangle = 1.0 - 4.0 * abs(phase - 0.5)
+        normalized = (triangle + 1.0) * 0.5
+        smoothed = normalized * normalized * (3.0 - 2.0 * normalized)
+        return smoothed * 2.0 - 1.0
+    if wave == 'loop-noise':
+        return _gradient_noise(phase * 4.0, period=4)
+    return _gradient_noise(position)
+
 
 def randomize_config(slot=None):
     """Regenerate the complete configuration from one random generator slot.
@@ -483,13 +536,19 @@ def randomize_config(slot=None):
     return slot
 
 def _dispatch_hotkeys(cfg, colors, selected_preset, poll_key,
-                      modifier_is_down, now):
+                      modifier_is_down, now, parameter_factor=None,
+                      action_callback=None):
     """Apply shared command semantics using a host-specific logical key API."""
     shift = modifier_is_down(VK_SHIFT)
     ctrl = modifier_is_down(VK_CONTROL)
     alt = modifier_is_down(VK_ALT)
-    factor = 100 if ctrl else 10 if shift else 1
+    native_factor = 100 if ctrl else 10 if shift else 1
     changed = False
+    palette_changed = False
+
+    def report_action(action):
+        if action_callback is not None:
+            action_callback(action)
 
     randomize_pressed, _ = poll_key(ord(RANDOMIZE_KEY), now)
     if randomize_pressed and not (shift or ctrl or alt):
@@ -498,8 +557,12 @@ def _dispatch_hotkeys(cfg, colors, selected_preset, poll_key,
             new_cfg, new_colors = load_runtime_config()
         except (OSError, ConfigError, ValueError, subprocess.SubprocessError):
             return selected_preset, None, None, False
+        preserved_fps = cfg['fps']
         cfg.clear()
         cfg.update(new_cfg)
+        cfg['fps'] = preserved_fps
+        write_section('config', cfg)
+        report_action('randomize')
         return 0, new_colors, random_slot, True
 
     for digit in LUT_KEYS:
@@ -513,6 +576,7 @@ def _dispatch_hotkeys(cfg, colors, selected_preset, poll_key,
                 continue
             cfg['active_lut'] = digit
             changed = True
+            palette_changed = True
         else:
             selected_preset = int(digit)
             preset = load_preset(selected_preset)
@@ -521,8 +585,29 @@ def _dispatch_hotkeys(cfg, colors, selected_preset, poll_key,
                     colors = resolve_palette(preset)
                 except (ConfigError, KeyError, ValueError):
                     continue
+                preserved_fps = cfg['fps']
                 cfg.update(preset)
+                cfg['fps'] = preserved_fps
                 changed = True
+                palette_changed = True
+                report_action('preset-load')
+
+    for key, direction in LUT_CYCLE_KEYS.items():
+        pressed, repeated = poll_key(ord(key), now)
+        if not (pressed or repeated) or alt:
+            continue
+        active = cfg['active_lut']
+        if active in LUT_KEYS:
+            slot = (int(active) + direction) % len(LUT_KEYS)
+        else:
+            slot = 0 if direction > 0 else len(LUT_KEYS) - 1
+        try:
+            colors = load_lut(str(slot))
+        except (ConfigError, KeyError, ValueError):
+            continue
+        cfg['active_lut'] = str(slot)
+        changed = True
+        palette_changed = True
 
     saved = False
     for key in PARAMETER_KEYS:
@@ -536,16 +621,24 @@ def _dispatch_hotkeys(cfg, colors, selected_preset, poll_key,
             continue
         if alt:
             continue
+        factor = (native_factor if parameter_factor is None
+                  else parameter_factor(key))
         _apply_parameter_delta(cfg, key, factor)
         changed = True
+        if (cfg['active_lut'] == 'none'
+                and PARAMETER_KEYS[key][0] in ('palette_size', 'hue_start',
+                                               'hue_end')):
+            palette_changed = True
 
     if changed:
-        try:
-            colors = resolve_palette(cfg)
-        except (ConfigError, KeyError, ValueError):
-            return selected_preset, None, None, saved
+        if palette_changed:
+            try:
+                colors = resolve_palette(cfg)
+            except (ConfigError, KeyError, ValueError):
+                return selected_preset, None, None, saved
         write_section('config', cfg)
-        return selected_preset, colors, None, True
+        return (selected_preset, colors if palette_changed else None,
+                None, True)
     return selected_preset, None, None, saved
 
 def poll_hotkeys(cfg, colors, selected_preset, now=None):
@@ -643,9 +736,166 @@ class BrowserRuntime:
         self.t = 0.0
         self.last_frame_time = None
         self._persistence_dirty = generated
+        self.resize_commit_count = 0
+        self.random_history = []
+        self.keybed_latch_mask = 0
+        self._parameter_baseline = {}
+        self.lut_revision = 0
+        self._lut_state_dirty = True
+        if generated:
+            self.cfg['fps'] = WEB_FPS_OPTIONS[0]
+            write_section('config', self.cfg)
+            self._persistence_dirty = True
+        self._capture_parameter_baseline()
+        self.energy = {
+            'enabled': False,
+            'depth': 25.0,
+            'rate': 1.0,
+            'width_min': -1.0,
+            'width_max': 1.0,
+            'offset': 0.0,
+            'target_mask': 1 << 2,
+            'wave': 'sine',
+        }
+        self.energy_position = 0.0
+        self.energy_output = 0.0
+        self.energy_targets = ('speed',)
 
-    def set_size(self, columns, lines):
+    def set_size(self, columns, lines, committed=False):
         set_browser_terminal_size(columns, lines)
+        if committed:
+            self.resize_commit_count += 1
+
+    def set_fps(self, fps):
+        if isinstance(fps, bool):
+            raise ValueError('web FPS must be numeric')
+        try:
+            fps = float(fps)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('web FPS must be numeric') from exc
+        if not math.isfinite(fps) or not 1.0 <= fps <= 1000.0:
+            raise ValueError('web FPS must be between 1 and 1000')
+        if self.cfg['fps'] == fps:
+            return
+        self.cfg['fps'] = fps
+        write_section('config', self.cfg)
+        self._persistence_dirty = True
+
+    def undo_randomize(self):
+        if not self.random_history:
+            return False
+        preserved_fps = self.cfg['fps']
+        cfg, colors, selected_preset = self.random_history.pop()
+        self.cfg.clear()
+        self.cfg.update(cfg)
+        self.cfg['fps'] = preserved_fps
+        self.palette_colors = list(colors)
+        self.palette = compile_palette(self.palette_colors)
+        self._mark_lut_state_dirty()
+        self.selected_preset = selected_preset
+        if self.cfg['active_lut'] != 'none':
+            write_lut(self.cfg['active_lut'], self.palette_colors)
+        write_section('config', self.cfg)
+        self._capture_parameter_baseline()
+        self._persistence_dirty = True
+        return True
+
+    def _capture_parameter_baseline(self):
+        """Snapshot only parameters owned by the compact web keybed."""
+        self._parameter_baseline = {
+            name: self.cfg[name] for name in KEYBED_PARAMETER_NAMES
+        }
+
+    def _handle_hotkey_action(self, action):
+        if action in ('preset-load', 'randomize'):
+            self._capture_parameter_baseline()
+
+    def set_keybed_latches(self, mask):
+        """Set the browser-only +/++ latch mask (bit 0/bit 1)."""
+        if isinstance(mask, bool):
+            raise ValueError('keybed latch mask must be an integer')
+        try:
+            value = float(mask)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('keybed latch mask must be an integer') from exc
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError('keybed latch mask must be an integer')
+        mask = int(value)
+        if not 0 <= mask <= 3:
+            raise ValueError('keybed latch mask must be between 0 and 3')
+        self.keybed_latch_mask = mask
+
+    def _web_parameter_factor(self, key):
+        """Return the latched factor for one web parameter command."""
+        if key not in WEB_KEYBED_KEYS:
+            return 1.0
+        parameter = PARAMETER_KEYS[key][0]
+        high_range = parameter in ('speed', 'rad')
+        factor = 1.0
+        if self.keybed_latch_mask & 1:
+            factor *= 3.0 if high_range else 1.5
+        if self.keybed_latch_mask & 2:
+            factor *= 6.0 if high_range else 3.0
+        return factor
+
+    def reset_keybed_parameters(self):
+        """Restore the current keybed baseline without touching LUT or FPS."""
+        self.keyboard.clear()
+        latches_changed = self.keybed_latch_mask != 0
+        self.set_keybed_latches(0)
+        changed = any(
+            self.cfg[name] != value
+            for name, value in self._parameter_baseline.items())
+        if changed:
+            self.cfg.update(self._parameter_baseline)
+            write_section('config', self.cfg)
+            self._persistence_dirty = True
+        return changed or latches_changed
+
+    def _mark_lut_state_dirty(self):
+        self.lut_revision += 1
+        self._lut_state_dirty = True
+
+    def replace_lut_json(self, json_text):
+        """Validate and atomically apply a complete browser LUT payload."""
+        try:
+            values = json.loads(str(json_text))
+        except (TypeError, ValueError) as exc:
+            raise ValueError('LUT payload must be valid JSON') from exc
+        if not isinstance(values, list) or len(values) != LUT_SIZE:
+            raise ValueError('LUT payload must contain exactly 256 colours')
+        colors = []
+        for value in values:
+            if (not isinstance(value, str)
+                    or re.fullmatch(r'[0-9A-Fa-f]{6}', value) is None):
+                raise ValueError('every LUT value must be exactly RRGGBB')
+            colors.append(value.upper())
+
+        slot = self.cfg['active_lut']
+        if slot == 'none':
+            slot = '0'
+        updated_cfg = dict(self.cfg)
+        updated_cfg['active_lut'] = slot
+        write_lut_and_config(slot, colors, updated_cfg)
+
+        self.cfg.clear()
+        self.cfg.update(updated_cfg)
+        self.palette_colors = colors
+        self.palette = compile_palette(colors)
+        self._mark_lut_state_dirty()
+        self._persistence_dirty = True
+        return self.lut_revision
+
+    def consume_lut_state_json(self):
+        """Return the complete LUT editor state only after palette changes."""
+        if not self._lut_state_dirty:
+            return None
+        self._lut_state_dirty = False
+        return json.dumps({
+            'colors': resample_palette(self.palette_colors, LUT_SIZE),
+            'slot': self.cfg['active_lut'],
+            'revision': self.lut_revision,
+        })
 
     def set_keyboard_ownership(self, owned):
         self.keyboard.set_owned(owned)
@@ -662,6 +912,74 @@ class BrowserRuntime:
             return
         self.keyboard.update(action, vk, shift, ctrl, alt)
 
+    def configure_energy(self, enabled, depth, rate, width_min, width_max,
+                         offset, target_mask, wave):
+        """Validate and replace the browser-only transient modulation state."""
+        values = (depth, rate, width_min, width_max, offset)
+        if not all(math.isfinite(float(value)) for value in values):
+            raise ValueError('energy numeric values must be finite')
+        depth = float(depth)
+        rate = float(rate)
+        width_min = float(width_min)
+        width_max = float(width_max)
+        offset = float(offset)
+        if isinstance(target_mask, bool):
+            raise ValueError('energy target mask must be an integer')
+        target_mask_value = float(target_mask)
+        if (not math.isfinite(target_mask_value)
+                or not target_mask_value.is_integer()):
+            raise ValueError('energy target mask must be an integer')
+        target_mask = int(target_mask_value)
+        wave = str(wave)
+        if not 0.0 <= depth <= 100.0:
+            raise ValueError('energy depth must be between 0 and 100')
+        if not -6.0 <= rate <= 6.0:
+            raise ValueError('energy rate must be between -6 and 6')
+        if not -1.0 <= width_min <= width_max <= 1.0:
+            raise ValueError('energy width must be ordered within -1 and 1')
+        if not -100.0 <= offset <= 100.0:
+            raise ValueError('energy offset must be between -100 and 100')
+        if not 0 <= target_mask < (1 << len(ENERGY_PARAMETERS)):
+            raise ValueError('energy target mask is outside the parameter ring')
+        if wave not in ENERGY_WAVES:
+            raise ValueError(f'unsupported energy wave: {wave}')
+        was_enabled = self.energy['enabled']
+        self.energy.update({
+            'enabled': bool(enabled),
+            'depth': depth,
+            'rate': rate,
+            'width_min': width_min,
+            'width_max': width_max,
+            'offset': offset,
+            'target_mask': target_mask,
+            'wave': wave,
+        })
+        self.energy_targets = tuple(
+            parameter[2] for index, parameter in enumerate(ENERGY_PARAMETERS)
+            if target_mask & (1 << index))
+        if self.energy['enabled'] and not was_enabled:
+            self.energy_position = 0.0
+        if not self.energy['enabled']:
+            self.energy_output = 0.0
+
+    def _effective_energy_values(self, elapsed):
+        """Return render parameters with transient modulation applied."""
+        effective = {name: self.cfg[name] for name, _, _ in ENERGY_PARAMETERS}
+        if not self.energy['enabled']:
+            self.energy_output = 0.0
+            return effective
+        self.energy_position += elapsed * self.energy['rate']
+        wave = energy_wave_value(self.energy['wave'], self.energy_position)
+        envelope = self.energy['width_min'] + (wave + 1.0) * 0.5 * (
+            self.energy['width_max'] - self.energy['width_min'])
+        self.energy_output = self.energy['offset'] + self.energy['depth'] * envelope
+        for index in range(len(ENERGY_PARAMETERS)):
+            if not self.energy['target_mask'] & (1 << index):
+                continue
+            name, step, _ = ENERGY_PARAMETERS[index]
+            effective[name] = self.cfg[name] + step * self.energy_output
+        return effective
+
     def _reload_external_config(self):
         signature = check_config()
         if signature is None:
@@ -670,9 +988,14 @@ class BrowserRuntime:
             new_cfg, new_colors = load_runtime_config()
         except (OSError, ConfigError, ValueError):
             return
+        previous_slot = self.cfg['active_lut']
+        palette_changed = (new_colors != self.palette_colors
+                           or new_cfg['active_lut'] != previous_slot)
         self.cfg.update(new_cfg)
         self.palette_colors = new_colors
         self.palette = compile_palette(new_colors)
+        if palette_changed:
+            self._mark_lut_state_dirty()
         _config_cache['signature'] = signature
 
     def step(self, frame_time=None):
@@ -685,27 +1008,35 @@ class BrowserRuntime:
         self.last_frame_time = frame_time
 
         self._reload_external_config()
+        before_random = (
+            dict(self.cfg), list(self.palette_colors), self.selected_preset)
         selected, changed_colors, random_slot, persistence_dirty = _dispatch_hotkeys(
             self.cfg, self.palette_colors, self.selected_preset,
-            self.keyboard.poll, self.keyboard.modifier_is_down, frame_time)
+            self.keyboard.poll, self.keyboard.modifier_is_down, frame_time,
+            parameter_factor=self._web_parameter_factor,
+            action_callback=self._handle_hotkey_action)
         self.selected_preset = selected
         if changed_colors is not None:
             self.palette_colors = changed_colors
             self.palette = compile_palette(changed_colors)
+            self._mark_lut_state_dirty()
             self._persistence_dirty = True
         if random_slot is not None:
+            self.random_history.append(before_random)
+            self.random_history = self.random_history[-2:]
             self.last_random_slot = random_slot
         if persistence_dirty:
             self._persistence_dirty = True
 
-        self.t += elapsed * 2.0 * self.cfg['speed']
+        effective = self._effective_energy_values(elapsed)
+        self.t += elapsed * 2.0 * effective['speed']
         return render(
             self.t,
             self.palette,
-            hue_shift=self.cfg['hue_shift'],
-            fx=self.cfg['fx'],
-            fy=self.cfg['fy'],
-            rad=self.cfg['rad'],
+            hue_shift=effective['hue_shift'],
+            fx=effective['fx'],
+            fy=effective['fy'],
+            rad=effective['rad'],
             frame_time=frame_time,
             synchronized_output=self.synchronized_output,
         )
@@ -719,10 +1050,23 @@ class BrowserRuntime:
             'lastRandomSlot': self.last_random_slot,
             'freqY': self.cfg['fy'],
             'activeLut': self.cfg['active_lut'],
+            'fps': self.cfg['fps'],
+            'resizeCommits': self.resize_commit_count,
+            'undoDepth': len(self.random_history),
             'keyboardOwned': self.keyboard.owned,
             'keyUpdates': self.keyboard.update_count,
             'pressedPolls': self.keyboard.pressed_poll_count,
             'lastAction': self.keyboard.last_action,
+            'energyEnabled': self.energy['enabled'],
+            'energyOutput': self.energy_output,
+            'energyPhase': self.energy_position % 1.0,
+            'energyPosition': self.energy_position,
+            'energyWave': self.energy['wave'],
+            'energyTargets': self.energy_targets,
+            'energyTargetMask': self.energy['target_mask'],
+            'keybedLatchMask': self.keybed_latch_mask,
+            'lutSlot': self.cfg['active_lut'],
+            'lutRevision': self.lut_revision,
         })
 
     def consume_persistence_text(self):

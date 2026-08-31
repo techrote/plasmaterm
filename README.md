@@ -2,7 +2,16 @@
 
 **PlasmaTerm is developed targetting Windows Terminal. And has only been tested in Windows Terminal**
 
-This `web-v0.1a` branch also includes an isolated browser experiment in [`web/`](web/README.md).
+This `web-v0.1a` branch also includes the bounded `web-v0.101a` browser presentation in [`web/`](web/README.md).
+
+The browser presentation uses a no-scroll workspace with separate PlasmaTerm,
+Keybed, Modulation, and LUT faux-terminal windows. Compact title-bar controls
+provide layout reset, maximize/stacking, and docking without changing native
+PlasmaTerm's terminal-first interface. Its web-only controls include editable
+Pt and FPS selectors, latching keybed multipliers, transient Energy modulation,
+and a live 256-colour LUT editor with bulk paste, scaled smooth randomisation,
+and clipboard export. A compact `Bg` field themes the terminal background,
+Modulation highlights, and docked-window tabs.
 
 
 
@@ -36,8 +45,7 @@ Controls:
 | `T/G`      | Increase/decrease speed                      |
 | `Y/H`      | Increase/decrease hue shift                  |
 | `U/J`      | Increase/decrease radius                     |
-| `I/K`      | Increase/decrease palette size               |
-| `O/L`      | Increase/decrease FPS                        |
+| `I/K`      | Cycle next/previous stored LUT (wraps 0–9)   |
 | `P`        | Randomize the complete config bank once      |
 
 Modifiers:
