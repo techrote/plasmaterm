@@ -75,15 +75,16 @@ PARAMETER_KEYS = {
 }
 LUT_CYCLE_KEYS = {'I': 1, 'K': -1}
 ENERGY_PARAMETERS = (
-    ('fy', 0.003, 'freq-y'),
-    ('fx', 0.003, 'freq-x'),
+    ('fy', 0.0015, 'freq-y'),
+    ('fx', 0.0015, 'freq-x'),
     ('speed', 0.02, 'speed'),
-    ('hue_shift', 0.005, 'hue-shift'),
-    ('rad', 0.005, 'radius'),
+    ('hue_shift', 0.0025, 'hue-shift'),
+    ('rad', 0.0025, 'radius'),
 )
 ENERGY_WAVES = frozenset(
     ('sine', 'smooth-triangle', 'loop-noise', 'wander-noise'))
 WEB_FPS_OPTIONS = (24.0, 30.0, 60.0, 120.0, 144.0, 240.0)
+WEB_DEFAULT_FPS = 60.0
 WEB_KEYBED_KEYS = frozenset(('Q', 'A', 'W', 'S', 'T', 'G', 'Y', 'H',
                              'U', 'J'))
 KEYBED_PARAMETER_NAMES = ('fy', 'fx', 'speed', 'hue_shift', 'rad')
@@ -743,14 +744,14 @@ class BrowserRuntime:
         self.lut_revision = 0
         self._lut_state_dirty = True
         if generated:
-            self.cfg['fps'] = WEB_FPS_OPTIONS[0]
+            self.cfg['fps'] = WEB_DEFAULT_FPS
             write_section('config', self.cfg)
             self._persistence_dirty = True
         self._capture_parameter_baseline()
         self.energy = {
             'enabled': False,
             'depth': 25.0,
-            'rate': 1.0,
+            'rate': 0.5,
             'width_min': -1.0,
             'width_max': 1.0,
             'offset': 0.0,

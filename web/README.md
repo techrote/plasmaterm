@@ -24,8 +24,9 @@ not supported.
 ## Controls
 
 The page is a no-scroll workspace containing four independent faux-terminal
-windows. PlasmaTerm begins at 900×560 on desktop; Keybed and Modulation begin
-visible, and LUT begins docked. Windows may overlap, are brought forward when
+windows. A fresh desktop load begins at Pt 24 and exactly 36×24 characters;
+Keybed, Modulation, and LUT begin
+docked. Windows may overlap, are brought forward when
 used, and may be dragged by only the blank part of their compact title bars.
 Their positions and stacking order last for the session rather than being
 written to storage.
@@ -36,10 +37,11 @@ rather than decoration. Keybed, Modulation, and LUT each have a yellow minimize
 control; minimizing adds a labelled restore button to PlasmaTerm's title bar.
 Restoring returns the window to its last position, clamps it to the viewport,
 and brings it forward. PlasmaTerm's green control toggles between its last good
-desktop geometry and a viewport-filling layout. On narrow/mobile layouts,
+desktop geometry and a viewport-filling layout while scaling Pt to retain the
+same character resolution. On narrow/mobile layouts,
 where PlasmaTerm already fills the viewport, green instead moves it between the
 front and back of the stack. PlasmaTerm's red control, or `Esc` anywhere on the
-page, restores the 900×560 desktop size, Pt 24, responsive starting positions,
+page, restores the Pt 24, 36×24 desktop layout, responsive starting positions,
 and default stacking: Keybed and Modulation visible at the front, LUT docked.
 This global reset changes layout and display scaling only, not the current
 plasma or Energy values.
@@ -58,7 +60,7 @@ exposes three editable display controls:
   background, Modulation highlights, and docked-window tabs with automatic
   contrasting text. This appearance setting resets on reload.
 - **FPS** presets are 24, 30, 60, 120, 144, and 240; direct entry accepts
-  1–1000. The default is 24, and the chosen value persists through presets,
+  1–1000. The default is 60, and the chosen value persists through presets,
   Randomize, and Randomize Undo.
 
 The Keybed pairs `Q/A`, `W/S`, `T/G`, `Y/H`, `U/J`, `I/K`, and
@@ -77,19 +79,20 @@ window. Native PlasmaTerm retains its existing Shift 10× and Ctrl 100×
 modifier behavior.
 
 The compact **Modulation** window places its five parameter toggles vertically
-at the far left, followed by a full-height dual-ended Width control and the
-vertical Energy and Rate controls. Offset sits directly beneath Energy/Rate
-with its label above it; the bottom row contains the prominent On/Off control
-and the unlabeled waveform selector. Energy and Rate have editable values;
-Rate's slider spans −3…+3 while its field accepts −6…+6. The waveform menu
-provides sine, smoothed triangle, seamless loop noise, and deterministic wander
-noise.
+at the far left. Width, AMP, and Hz align across the primary row, with the
+dual-ended Width track shortened to that same slider height. The glowing
+On/Off text fills the space beneath Width. Offset sits directly beneath AMP/Hz
+with its label above it, and the centred, arrowless waveform dropdown fills the
+bottom right. AMP and Hz labels sit centred above their compact editable
+values; Hz's slider spans
+−3…+3 while its field accepts −6…+6. The waveform menu provides sine,
+smoothed triangle, seamless loop noise, and deterministic wander noise.
 
 Energy remains transient and never rewrites the base configuration. Frequency
-Y/X use 30% of their keybed fine step, hue shift uses a 0.005 step (half the
-previous Energy sensitivity), radius uses 50%, and speed is unchanged. The
-Modulation Reset button leaves the window in place and restores Off, Energy
-25, Rate 1, Width −100…+100%, Offset 0, Sine, and Speed as the sole target.
+Y/X use a 0.0015 step, hue shift uses a 0.0025 step, radius uses a 0.0025 step,
+and speed is unchanged. The Modulation Reset button leaves the window in place
+and restores Off, AMP 25, Hz 0.5, Width −100…+100%, Offset 0, Sine, and Speed
+as the sole target.
 
 Browser keyboard controls also include `0–9` for presets, `Ctrl+0–9` for direct
 LUT loads, `Alt+S` to save, and bare `P` to regenerate the complete config bank
@@ -141,9 +144,10 @@ Tested dependency pins:
 - xterm FitAddon `0.11.0`
 
 Pyodide runs in a Web Worker. Complete ANSI frames are coalesced on the host so
-at most one unpresented frame is retained; the default browser path omits DEC
-2026 delimiters and performs one xterm write per presented frame. Add `?sync=1`
-to compare xterm.js synchronized output. The default DOM renderer is used;
+at most one unpresented frame is retained. The default browser path wraps each
+xterm write in DEC 2026 synchronized-output delimiters so a 60 FPS update does
+not expose partially applied rows or flickering cell edges. Add `?sync=0` to
+disable those delimiters for comparison. The default DOM renderer is used;
 WebGL is intentionally not enabled for this unusually high-churn workload.
 
 Performance depends on viewport and character size. The bounded desktop
@@ -160,9 +164,8 @@ Undo, LUT cycling, signed/noise Energy modulation, and no-scroll responsive layo
 The original performance pass tested cells from 61×21 through 141×43. Python sustained
 about 39.8 produced FPS. At 140×43, the bounded host presented roughly 14–16
 FPS, coalesced obsolete worker frames, and accumulated no main-thread frame
-queue. DEC 2026 and browser-side atomic writes performed similarly; the atomic
-path remains the default because it is simpler and does not depend on continuous
-synchronized-output support. Three random slots produced byte-for-byte identical
+queue. DEC 2026 and browser-side atomic writes performed similarly in that
+original pass. Three random slots produced byte-for-byte identical
 configuration SHA-256 hashes in native Python and Pyodide.
 
 A 10-minute 15-second default-path run with controls, Randomize, and resizing

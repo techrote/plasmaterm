@@ -100,6 +100,22 @@ class DeterministicGenerationTests(unittest.TestCase):
             self.assertTrue(all(HEX_COLOR.fullmatch(color)
                                 for color in colors))
 
+    def test_default_profile_is_calm_smooth_rainbow(self):
+        profile, lut = generator.generate_profile(0, '0')
+        self.assertEqual(profile['speed'], generator.SPEED_MIN)
+        self.assertEqual(profile['hue-shift'], 2.0)
+        self.assertEqual(profile['freq-x'], 0.24)
+        self.assertEqual(profile['freq-y'], 0.32)
+        self.assertEqual(profile['radius'], 0.48)
+        self.assertEqual(len(set(lut)), generator.LUT_SIZE)
+        rgb = [tuple(int(color[index:index + 2], 16)
+                     for index in (0, 2, 4)) for color in lut]
+        largest_step = max(
+            max(abs(a - b) for a, b in zip(rgb[index],
+                                           rgb[(index + 1) % len(rgb)]))
+            for index in range(len(rgb)))
+        self.assertLessEqual(largest_step, 8)
+
 
 class BootstrapAndPersistenceTests(unittest.TestCase):
     def test_missing_config_is_generated_and_loadable(self):

@@ -30,8 +30,8 @@ class BrowserPresentationTests(unittest.TestCase):
         self.assertIn("plasmaterm.web-v0.101a.config", self.javascript)
 
     def test_desktop_window_is_bounded_and_centre_anchored(self):
-        self.assertIn('--plasma-width: 900px', self.html)
-        self.assertIn('--plasma-height: 560px', self.html)
+        self.assertIn('--plasma-width: 538px', self.html)
+        self.assertIn('--plasma-height: 602px', self.html)
         self.assertIn('transform: translate(-50%, -50%)', self.html)
         self.assertIn('(Math.abs(moveEvent.clientX - centreX) - startDistanceX) * 2',
                       self.javascript)
@@ -79,15 +79,34 @@ class BrowserPresentationTests(unittest.TestCase):
             self.assertIn(f'<option value="{point_size}"', self.html)
         self.assertIn('id="pt-down"', self.html)
         self.assertIn('id="pt-up"', self.html)
-        self.assertIn("const DISPLAY_SCHEMA_VERSION = 3", self.javascript)
-        self.assertIn('fontSize: 24', self.javascript)
+        self.assertIn("const DISPLAY_SCHEMA_VERSION = 5", self.javascript)
+        self.assertIn('const DEFAULT_GRID = Object.freeze({ columns: 36, lines: 24 })',
+                      self.javascript)
+        self.assertIn('width: 538,', self.javascript)
+        self.assertIn('height: 602,', self.javascript)
+        self.assertIn('fontSize: 24,', self.javascript)
+        self.assertNotIn('width: stored.width, height: stored.height', self.javascript)
         self.assertIn("type: 'resizePause'", self.javascript)
         self.assertIn("fitTerminal('resizeCommit')", self.javascript)
         self.assertIn("type: 'undoRandomize'", self.javascript)
         self.assertIn('function editingControlActive(', self.javascript)
-        self.assertIn('let selectedFps = 24', self.javascript)
-        self.assertIn("'fps = 24'", self.javascript)
+        self.assertIn('const DEFAULT_FPS = 60', self.javascript)
+        self.assertIn('let selectedFps = DEFAULT_FPS', self.javascript)
+        self.assertIn('`fps = ${DEFAULT_FPS}`', self.javascript)
         self.assertEqual(plasma.WEB_FPS_OPTIONS[0], 24)
+        self.assertEqual(plasma.WEB_DEFAULT_FPS, 60)
+
+    def test_fullscreen_preserves_grid_by_scaling_point_size(self):
+        self.assertIn('function pointSizeForFixedResolution(dimensions)',
+                      self.javascript)
+        self.assertIn('columns: terminal.cols,', self.javascript)
+        self.assertIn('lines: terminal.rows,', self.javascript)
+        self.assertIn('setCharacterSize(pointSizeForFixedResolution(exactDimensions), false, false)',
+                      self.javascript)
+        self.assertIn("fitTerminal('resizeCommit', exactDimensions)", self.javascript)
+        self.assertIn("setWindowDocked('controls', true, false)", self.javascript)
+        self.assertIn("setWindowDocked('energy', true, false)", self.javascript)
+        self.assertIn("get('sync') !== '0'", self.javascript)
 
     def test_background_field_themes_requested_surfaces_on_commit(self):
         pt_position = self.html.index('id="pt-input"')
@@ -117,6 +136,24 @@ class BrowserPresentationTests(unittest.TestCase):
         self.assertIn('id="energy-rate-output" type="number" min="-6" max="6"', self.html)
         self.assertIn('id="energy-rate" type="range" orient="vertical" min="-3" max="3"', self.html)
         self.assertIn('class="width-fill"', self.html)
+
+    def test_compact_modulation_labels_and_key_hierarchy_are_present(self):
+        self.assertIn('family=Orbitron:wght@500;600;700;800', self.html)
+        self.assertIn('<span class="control-name">AMP</span>\n          <input', self.html)
+        self.assertIn('<span class="control-name">Hz</span>\n          <input', self.html)
+        self.assertNotIn('id="energy-width-output"', self.html)
+        self.assertNotIn('class="energy-led"', self.html)
+        self.assertIn('.width-control { grid-column: 2; grid-row: 1;', self.html)
+        self.assertIn('.depth-control { grid-column: 3; grid-row: 1;', self.html)
+        self.assertIn('.rate-control { grid-column: 4; grid-row: 1;', self.html)
+        self.assertIn('grid-row: 2 / 4;', self.html)
+        self.assertIn('text-align-last: center;', self.html)
+        self.assertIn('background-image: none;', self.html)
+        self.assertIn('font: 800 10px/1 Orbitron', self.html)
+        self.assertIn('.keycap strong { display: block; color: #817989; font: 600 7px/1 Orbitron',
+                      self.html)
+        self.assertIn('.keycap small { display: grid; min-height: 22px;', self.html)
+        self.assertIn('font: 800 10px/1.05 Orbitron', self.html)
 
     def test_compact_faux_windows_are_independently_draggable(self):
         self.assertEqual(self.html.count('class="faux-window'), 4)
@@ -210,7 +247,7 @@ class EnergyModulationTests(unittest.TestCase):
                 runtime.configure_energy(
                     True, 100, 0.25, 1, 1, 0, 1, 'sine')
                 effective = runtime._effective_energy_values(0.0)
-                self.assertAlmostEqual(effective['fy'], base['fy'] + 0.3)
+                self.assertAlmostEqual(effective['fy'], base['fy'] + 0.15)
                 self.assertEqual(runtime.cfg, base)
                 self.assertIs(runtime.palette, palette)
                 runtime.configure_energy(
@@ -255,11 +292,11 @@ class EnergyModulationTests(unittest.TestCase):
                   mock.patch.object(plasma, 'RUNNING_IN_BROWSER', True)):
                 plasma._config_cache['signature'] = None
                 runtime = plasma.BrowserRuntime(8, 4)
-                self.assertEqual(runtime.energy['rate'], 1)
+                self.assertEqual(runtime.energy['rate'], 0.5)
                 runtime.configure_energy(True, 100, -1, -1, 1, 0, 1, 'sine')
                 reverse = runtime._effective_energy_values(0.25)
                 self.assertAlmostEqual(runtime.energy_position, -0.25)
-                self.assertAlmostEqual(reverse['fy'], runtime.cfg['fy'] - 0.3)
+                self.assertAlmostEqual(reverse['fy'], runtime.cfg['fy'] - 0.15)
                 runtime.configure_energy(True, 100, 0, -1, 1, 0, 1, 'sine')
                 runtime._effective_energy_values(4)
                 self.assertAlmostEqual(runtime.energy_position, -0.25)
@@ -419,7 +456,7 @@ class WebControlTests(unittest.TestCase):
                   mock.patch.object(plasma, 'RUNNING_IN_BROWSER', True)):
                 plasma._config_cache['signature'] = None
                 runtime = plasma.BrowserRuntime(8, 4)
-                self.assertEqual(runtime.cfg['fps'], 24)
+                self.assertEqual(runtime.cfg['fps'], 60)
 
     def test_lut_keys_cycle_both_directions_and_wrap(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -445,12 +482,12 @@ class WebControlTests(unittest.TestCase):
         self.assertEqual(plasma.PARAMETER_KEYS['Y'], ('hue_shift', 0.5))
         self.assertEqual(plasma.PARAMETER_KEYS['H'], ('hue_shift', -0.5))
         self.assertEqual(plasma.ENERGY_PARAMETERS[3],
-                         ('hue_shift', 0.005, 'hue-shift'))
+                         ('hue_shift', 0.0025, 'hue-shift'))
         self.assertEqual(plasma.PARAMETER_KEYS['T'], ('speed', 0.03))
         self.assertEqual(plasma.PARAMETER_KEYS['G'], ('speed', -0.03))
-        self.assertEqual(plasma.ENERGY_PARAMETERS[0], ('fy', 0.003, 'freq-y'))
-        self.assertEqual(plasma.ENERGY_PARAMETERS[1], ('fx', 0.003, 'freq-x'))
-        self.assertEqual(plasma.ENERGY_PARAMETERS[4], ('rad', 0.005, 'radius'))
+        self.assertEqual(plasma.ENERGY_PARAMETERS[0], ('fy', 0.0015, 'freq-y'))
+        self.assertEqual(plasma.ENERGY_PARAMETERS[1], ('fx', 0.0015, 'freq-x'))
+        self.assertEqual(plasma.ENERGY_PARAMETERS[4], ('rad', 0.0025, 'radius'))
         self.assertNotIn('O', plasma.PARAMETER_KEYS)
         self.assertNotIn('L', plasma.PARAMETER_KEYS)
         self.assertNotIn('I', plasma.PARAMETER_KEYS)

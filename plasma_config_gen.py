@@ -15,7 +15,7 @@ import os
 import tempfile
 
 
-GENERATOR_VERSION = 1
+GENERATOR_VERSION = 2
 MASTER_SEED = 'PlasmaTerm/default-family/2026-08-29'
 DEFAULT_SLOT = 0
 
@@ -167,12 +167,35 @@ def _generate_lut(rng, base_hue, hue_span, direction):
     return colors
 
 
+def _generate_calm_rainbow_lut():
+    """Return a smooth closed rainbow with a slow brightness swell."""
+    colors = []
+    for index in range(LUT_SIZE):
+        position = index / LUT_SIZE
+        value = 0.18 + 0.82 * (0.5 - 0.5 * math.cos(2.0 * math.pi * position))
+        colors.append(_hsv_to_hex(position * 360.0, 0.78, value))
+    return colors
+
+
 def generate_profile(slot, lut_slot='0'):
     """Return one exact parameter mapping and its deterministic LUT."""
     slot = _validate_slot(slot)
     lut_slot = str(lut_slot)
     if len(lut_slot) != 1 or lut_slot not in '0123456789':
         raise ValueError('lut_slot must be a single digit from 0 to 9')
+    if slot == DEFAULT_SLOT:
+        return ({
+            'speed': 0.35,
+            'hue-shift': 2.0,
+            'freq-x': 0.24,
+            'freq-y': 0.32,
+            'radius': 0.48,
+            'palette-size': PALETTE_SIZE,
+            'hue-start': 0.0,
+            'hue-end': 360.0 - (360.0 / LUT_SIZE),
+            'fps': FPS,
+            'active-lut': lut_slot,
+        }, _generate_calm_rainbow_lut())
     rng = StablePRNG(derive_profile_seed(slot))
 
     # Frequencies share a latent scale but are deliberately separated to avoid

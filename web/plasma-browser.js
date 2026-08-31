@@ -1,9 +1,16 @@
 const CONFIG_STORAGE_KEY = 'plasmaterm.web-v0.101a.config';
 const LEGACY_CONFIG_STORAGE_KEY = 'plasmaterm.web-v0.1a.config';
 const DISPLAY_STORAGE_KEY = 'plasmaterm.web-v0.101a.display';
-const FPS_DEFAULT_MIGRATION_KEY = 'plasmaterm.web-v0.101a.fps-default-24';
-const DISPLAY_SCHEMA_VERSION = 3;
-const DEFAULT_DISPLAY = { version: DISPLAY_SCHEMA_VERSION, width: 900, height: 560, fontSize: 24 };
+const FPS_DEFAULT_MIGRATION_KEY = 'plasmaterm.web-v0.101a.fps-default-60';
+const DISPLAY_SCHEMA_VERSION = 5;
+const DEFAULT_GRID = Object.freeze({ columns: 36, lines: 24 });
+const DEFAULT_FPS = 60;
+const DEFAULT_DISPLAY = Object.freeze({
+  version: DISPLAY_SCHEMA_VERSION,
+  width: 538,
+  height: 602,
+  fontSize: 24,
+});
 const PARAMETER_KEYS = new Set('QAWSEDRFTGYHUJIK');
 const DIGIT_KEYS = new Set('0123456789');
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt']);
@@ -55,18 +62,17 @@ const energyInputs = {
 const energyOutputs = {
   depth: document.querySelector('#energy-depth-output'),
   rate: document.querySelector('#energy-rate-output'),
-  width: document.querySelector('#energy-width-output'),
   offset: document.querySelector('#energy-offset-output'),
 };
 const energyWidthTrack = document.querySelector('#energy-width-track');
 const energyWaveSelect = document.querySelector('#energy-wave');
 const targetButtons = [...document.querySelectorAll('.target-led')];
 const mobileLayout = matchMedia('(max-width: 700px)');
-const dec2026 = new URLSearchParams(location.search).get('sync') === '1';
+const dec2026 = new URLSearchParams(location.search).get('sync') !== '0';
 const DEFAULT_ENERGY = Object.freeze({
   enabled: false,
   depth: 25,
-  rate: 1,
+  rate: 0.5,
   widthMin: -1,
   widthMax: 1,
   offset: 0,
@@ -341,12 +347,16 @@ randomiseLutButton.addEventListener('click', () => {
 });
 setLutRandomScale(lutRandomScale);
 
+let displayWasStored = false;
 function loadDisplay() {
   try {
-    const stored = JSON.parse(localStorage.getItem(DISPLAY_STORAGE_KEY) ?? '{}');
+    const serialized = localStorage.getItem(DISPLAY_STORAGE_KEY);
+    if (!serialized) return { ...DEFAULT_DISPLAY };
+    const stored = JSON.parse(serialized);
     if (stored.version !== DISPLAY_SCHEMA_VERSION) {
-      return { ...DEFAULT_DISPLAY, width: stored.width, height: stored.height };
+      return { ...DEFAULT_DISPLAY };
     }
+    displayWasStored = true;
     return { ...DEFAULT_DISPLAY, ...stored };
   } catch {
     return { ...DEFAULT_DISPLAY };
@@ -354,6 +364,7 @@ function loadDisplay() {
 }
 
 let display = loadDisplay();
+const firstDisplayLoad = !displayWasStored;
 display.width = Math.max(480, Math.min(1600, Number(display.width) || DEFAULT_DISPLAY.width));
 display.height = Math.max(320, Math.min(1000, Number(display.height) || DEFAULT_DISPLAY.height));
 display.fontSize = Math.max(6, Math.min(200, Number(display.fontSize) || DEFAULT_DISPLAY.fontSize));
@@ -392,6 +403,7 @@ const fitAddon = new FitAddon();
 terminal.loadAddon(fitAddon);
 terminal.open(terminalElement);
 fitAddon.fit();
+if (firstDisplayLoad) terminal.resize(DEFAULT_GRID.columns, DEFAULT_GRID.lines);
 
 function paintBackgroundField(color) {
   bgInput.value = color;
@@ -523,8 +535,6 @@ function updateEnergyTargets(targets = energyTargets()) {
 function updateEnergyControls() {
   energyOutputs.depth.value = String(energyState.depth);
   energyOutputs.rate.value = String(Number(energyState.rate.toFixed(2)));
-  const signed = (value) => `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value)}`;
-  energyOutputs.width.value = `${signed(Math.round(energyState.widthMin * 100))}…${signed(Math.round(energyState.widthMax * 100))}%`;
   energyOutputs.offset.value = String(energyState.offset);
   energyInputs.depth.value = String(energyState.depth);
   energyInputs.rate.value = String(Math.max(-3, Math.min(3, energyState.rate)));
@@ -625,9 +635,16 @@ updateEnergyControls();
 let fitScheduled = false;
 let liveResizing = false;
 let pendingResizeMessage = 'resize';
+let pendingExactDimensions = null;
 
-function fitTerminal(messageType = 'resize') {
+function fitTerminal(messageType = 'resize', exactDimensions = null) {
   if (messageType === 'resizeCommit') pendingResizeMessage = 'resizeCommit';
+  if (exactDimensions) {
+    pendingExactDimensions = {
+      columns: Math.max(2, Math.round(exactDimensions.columns)),
+      lines: Math.max(2, Math.round(exactDimensions.lines)),
+    };
+  }
   if (liveResizing || fitScheduled) return;
   fitScheduled = true;
   requestAnimationFrame(() => {
@@ -635,7 +652,13 @@ function fitTerminal(messageType = 'resize') {
     if (liveResizing) return;
     const committedMessage = pendingResizeMessage;
     pendingResizeMessage = 'resize';
-    fitAddon.fit();
+    const fixed = pendingExactDimensions;
+    pendingExactDimensions = null;
+    if (fixed) {
+      terminal.resize(fixed.columns, fixed.lines);
+    } else {
+      fitAddon.fit();
+    }
     metrics.dimensions = { columns: terminal.cols, lines: terminal.rows };
     terminalElement.dataset.columns = String(terminal.cols);
     terminalElement.dataset.lines = String(terminal.rows);
@@ -649,7 +672,7 @@ function syncPresetSelect(select, value) {
     ? normalized : '';
 }
 
-function setCharacterSize(value, persist = true) {
+function setCharacterSize(value, persist = true, refit = true) {
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) {
     ptInput.value = String(display.fontSize);
@@ -662,7 +685,30 @@ function setCharacterSize(value, persist = true) {
   syncPresetSelect(ptPresetSelect, fontSize);
   terminalElement.dataset.fontSize = String(fontSize);
   if (persist) saveDisplay();
-  fitTerminal();
+  if (refit) fitTerminal();
+}
+
+function pointSizeForFixedResolution(dimensions) {
+  if (visualRestoreGeometry?.terminalWidth && visualRestoreGeometry?.terminalHeight) {
+    const scale = Math.min(
+      Math.max(1, terminalElement.clientWidth - 8) / visualRestoreGeometry.terminalWidth,
+      Math.max(1, terminalElement.clientHeight - 8) / visualRestoreGeometry.terminalHeight,
+    );
+    return Math.max(6, Math.min(200, Math.floor(
+      visualRestoreGeometry.fontSize * scale)));
+  }
+  const screen = terminalElement.querySelector('.xterm-screen')?.getBoundingClientRect();
+  const currentPt = Math.max(1, display.fontSize);
+  const cellWidthPerPt = screen?.width && terminal.cols
+    ? screen.width / terminal.cols / currentPt : 0.62;
+  const cellHeightPerPt = screen?.height && terminal.rows
+    ? screen.height / terminal.rows / currentPt : 1;
+  const width = Math.max(1, terminalElement.clientWidth - 8);
+  const height = Math.max(1, terminalElement.clientHeight - 8);
+  return Math.max(6, Math.min(200, Math.floor(Math.min(
+    width / (dimensions.columns * cellWidthPerPt),
+    height / (dimensions.lines * cellHeightPerPt),
+  ))));
 }
 
 const commitCharacterField = () => {
@@ -686,7 +732,7 @@ ptPresetSelect.addEventListener('change', () => {
   if (ptPresetSelect.value !== '') setCharacterSize(ptPresetSelect.value);
 });
 
-let selectedFps = 24;
+let selectedFps = DEFAULT_FPS;
 function setFpsField(value, send = true) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
@@ -752,6 +798,7 @@ let topWindowZ = 50;
 let cancelActiveInteraction = null;
 let visualMaximized = false;
 let visualRestoreGeometry = null;
+let visualFixedDimensions = null;
 let mobileVisualFront = false;
 
 function setWindowCenter(element, x, y) {
@@ -1031,11 +1078,14 @@ function beginVisualGeometryChange() {
   if (runtimeReady) worker.postMessage({ type: 'resizePause' });
 }
 
-function finishVisualGeometryChange() {
+function finishVisualGeometryChange(exactDimensions = null, scalePointSize = false) {
   requestAnimationFrame(() => {
+    if (exactDimensions && scalePointSize) {
+      setCharacterSize(pointSizeForFixedResolution(exactDimensions), false, false);
+    }
     plasmaWindow.classList.remove('is-resizing');
     liveResizing = false;
-    fitTerminal('resizeCommit');
+    fitTerminal('resizeCommit', exactDimensions);
   });
 }
 
@@ -1065,15 +1115,25 @@ function toggleVisualMode() {
     return;
   }
   beginVisualGeometryChange();
+  let fixedDimensions;
+  let scalePointSize = false;
   if (!visualMaximized) {
     const current = windowPositions.get(plasmaWindow)
       ?? { x: innerWidth / 2, y: innerHeight / 2 };
     visualRestoreGeometry = {
       width: display.width,
       height: display.height,
+      fontSize: display.fontSize,
+      columns: terminal.cols,
+      lines: terminal.rows,
+      terminalWidth: Math.max(1, terminalElement.clientWidth - 8),
+      terminalHeight: Math.max(1, terminalElement.clientHeight - 8),
       x: current.x,
       y: current.y,
     };
+    fixedDimensions = { columns: terminal.cols, lines: terminal.rows };
+    visualFixedDimensions = fixedDimensions;
+    scalePointSize = true;
     visualMaximized = true;
     plasmaWindow.classList.add('is-maximized');
   } else {
@@ -1082,16 +1142,22 @@ function toggleVisualMode() {
     const restore = visualRestoreGeometry ?? {
       width: display.width,
       height: display.height,
+      fontSize: display.fontSize,
+      columns: terminal.cols,
+      lines: terminal.rows,
       x: innerWidth / 2,
       y: innerHeight / 2,
     };
+    fixedDimensions = { columns: restore.columns, lines: restore.lines };
+    visualFixedDimensions = null;
     setWindowSize(restore.width, restore.height, false);
+    setCharacterSize(restore.fontSize, false, false);
     const recovered = clampWindowCenter(plasmaWindow, restore.x, restore.y);
     setWindowCenter(plasmaWindow, recovered.x, recovered.y);
   }
   visualModeButton.setAttribute('aria-pressed', String(visualMaximized));
   updateVisualModeLabel();
-  finishVisualGeometryChange();
+  finishVisualGeometryChange(fixedDimensions, scalePointSize);
 }
 
 function resetWorkspaceLayout() {
@@ -1100,19 +1166,20 @@ function resetWorkspaceLayout() {
   visualMaximized = false;
   mobileVisualFront = false;
   visualRestoreGeometry = null;
+  visualFixedDimensions = null;
   plasmaWindow.classList.remove('is-maximized');
   visualModeButton.setAttribute('aria-pressed', 'false');
   updateVisualModeLabel();
   display = { ...DEFAULT_DISPLAY };
   setWindowSize(display.width, display.height, false);
-  setCharacterSize(display.fontSize, false);
+  setCharacterSize(display.fontSize, false, false);
   saveDisplay();
   setWindowDocked('controls', false, false);
   setWindowDocked('energy', false, false);
   setWindowDocked('lut', true, false);
   resetWindowPositions();
   resetStackingOrder();
-  finishVisualGeometryChange();
+  finishVisualGeometryChange(DEFAULT_GRID);
   requestAnimationFrame(() => {
     terminal.focus();
     setKeyboardOwnership(true);
@@ -1168,7 +1235,12 @@ window.addEventListener('resize', () => {
     const recovered = clampWindowCenter(element, current.x, current.y);
     setWindowCenter(element, recovered.x, recovered.y);
   }
-  fitTerminal();
+  if (visualMaximized && visualFixedDimensions) {
+    setCharacterSize(pointSizeForFixedResolution(visualFixedDimensions), false, false);
+    fitTerminal('resize', visualFixedDimensions);
+  } else {
+    fitTerminal();
+  }
 });
 
 function exposeConfig(contents) {
@@ -1457,7 +1529,7 @@ try {
     ?? localStorage.getItem(LEGACY_CONFIG_STORAGE_KEY);
   if (localStorage.getItem(FPS_DEFAULT_MIGRATION_KEY) !== '1') {
     restoredConfig = restoredConfig?.replace(
-      /^fps\s*=\s*30(?:\.0+)?\s*$/m, 'fps = 24') ?? null;
+      /^fps\s*=\s*24(?:\.0+)?\s*$/m, `fps = ${DEFAULT_FPS}`) ?? null;
     localStorage.setItem(FPS_DEFAULT_MIGRATION_KEY, '1');
   }
 } catch { /* noop */ }
@@ -1471,11 +1543,15 @@ worker.postMessage({
 });
 terminal.focus();
 setWindowSize(display.width, display.height, false);
-setCharacterSize(display.fontSize, false);
+setCharacterSize(display.fontSize, false, false);
 updateVisualModeLabel();
+if (firstDisplayLoad) {
+  terminal.resize(DEFAULT_GRID.columns, DEFAULT_GRID.lines);
+  fitTerminal('resize', DEFAULT_GRID);
+}
 requestAnimationFrame(() => {
-  setWindowDocked('controls', false, false);
-  setWindowDocked('energy', false, false);
+  setWindowDocked('controls', true, false);
+  setWindowDocked('energy', true, false);
   setWindowDocked('lut', true, false);
   resetWindowPositions();
   resetStackingOrder();
